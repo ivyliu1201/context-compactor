@@ -1,0 +1,19 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+
+# Test and coverage output
+/coverage.out
+/coverage.html
+/.cache/
+
+# Local context-compactor data
+/.context-compactor/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,13 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The project follows [Semantic Versioning](https://semver.org/) after its first
+public release.
+
+## [Unreleased]
+
+### Added
+
+- Initial bilingual project documentation and Apache-2.0 license.
+- `context-compactor/v1` protocol foundation and deterministic validation.

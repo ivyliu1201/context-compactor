@@ -1,0 +1,5 @@
+readmeLanguage: bilingual
+releaseLanguage: en
+releaseMode: draft
+tagPrefix: v
+maintainChangelog: true
