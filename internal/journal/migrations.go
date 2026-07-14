@@ -88,6 +88,80 @@ CREATE INDEX resume_checkpoints_created_idx
     ON resume_checkpoints(created_at DESC, seq DESC);
 `,
 	},
+	{
+		version: 2,
+		sql: `
+CREATE UNIQUE INDEX memory_operations_seq_id_idx
+    ON memory_operations(seq, operation_id);
+
+CREATE TABLE memory_records (
+    record_id TEXT PRIMARY KEY,
+    conflict_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    canonical_value TEXT NOT NULL,
+    priority TEXT NOT NULL CHECK (priority IN ('critical', 'high', 'normal', 'low')),
+    lifecycle_status TEXT NOT NULL
+        CHECK (lifecycle_status IN ('active', 'superseded', 'resolved', 'expired', 'duplicate')),
+    record_json TEXT NOT NULL CHECK (json_valid(record_json)),
+    source_event_id TEXT NOT NULL REFERENCES events(event_id) ON DELETE RESTRICT,
+    source_operation_id TEXT NOT NULL UNIQUE,
+    source_operation_seq INTEGER NOT NULL UNIQUE,
+    terminal_operation_id TEXT REFERENCES memory_operations(operation_id) ON DELETE RESTRICT,
+    superseded_by_record_id TEXT REFERENCES memory_records(record_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    duplicate_of_record_id TEXT REFERENCES memory_records(record_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (source_operation_seq, source_operation_id)
+        REFERENCES memory_operations(seq, operation_id) ON DELETE RESTRICT,
+    CHECK (
+        (lifecycle_status = 'active'
+            AND terminal_operation_id IS NULL
+            AND superseded_by_record_id IS NULL
+            AND duplicate_of_record_id IS NULL) OR
+        (lifecycle_status = 'superseded'
+            AND terminal_operation_id IS NOT NULL
+            AND superseded_by_record_id IS NOT NULL
+            AND duplicate_of_record_id IS NULL) OR
+        (lifecycle_status IN ('resolved', 'expired')
+            AND terminal_operation_id IS NOT NULL
+            AND superseded_by_record_id IS NULL
+            AND duplicate_of_record_id IS NULL) OR
+        (lifecycle_status = 'duplicate'
+            AND terminal_operation_id IS NULL
+            AND superseded_by_record_id IS NULL
+            AND duplicate_of_record_id IS NOT NULL)
+    )
+) STRICT;
+
+CREATE INDEX memory_records_active_key_idx
+    ON memory_records(conflict_key, lifecycle_status, source_operation_seq);
+
+CREATE TABLE memory_contradictions (
+    contradiction_id TEXT PRIMARY KEY CHECK (length(contradiction_id) = 64),
+    conflict_key TEXT NOT NULL,
+    left_record_id TEXT NOT NULL REFERENCES memory_records(record_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    right_record_id TEXT NOT NULL REFERENCES memory_records(record_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    impact TEXT NOT NULL CHECK (impact IN ('advisory', 'blocking')),
+    detected_operation_seq INTEGER NOT NULL REFERENCES memory_operations(seq) ON DELETE RESTRICT,
+    CHECK (left_record_id < right_record_id),
+    UNIQUE (conflict_key, left_record_id, right_record_id)
+) STRICT;
+
+CREATE INDEX memory_contradictions_impact_idx
+    ON memory_contradictions(impact, conflict_key);
+
+CREATE TABLE memory_view_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    last_event_seq INTEGER NOT NULL CHECK (last_event_seq >= 0),
+    last_operation_seq INTEGER NOT NULL CHECK (last_operation_seq >= 0),
+    view_digest TEXT NOT NULL CHECK (length(view_digest) = 64),
+    record_count INTEGER NOT NULL CHECK (record_count >= 0),
+    contradiction_count INTEGER NOT NULL CHECK (contradiction_count >= 0)
+) STRICT;
+`,
+	},
 }
 
 const migrationTableSQL = `

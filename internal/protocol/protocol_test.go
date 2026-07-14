@@ -61,6 +61,22 @@ func TestValidateMutationBatchRejectsInferredCriticalRecord(t *testing.T) {
 	assertErrorContains(t, err, "critical record cannot use inferred confidence")
 }
 
+func TestValidateMutationBatchRejectsCriticalRecordWithoutConflictKey(t *testing.T) {
+	batch := validBatch()
+	batch.Operations[0].Record.ConflictKey = ""
+
+	err := ValidateMutationBatch(batch)
+	assertErrorContains(t, err, "critical record requires conflict_key")
+}
+
+func TestValidateMutationBatchRejectsInvalidConflictKey(t *testing.T) {
+	batch := validBatch()
+	batch.Operations[0].Record.ConflictKey = "Privacy Prompt Retention"
+
+	err := ValidateMutationBatch(batch)
+	assertErrorContains(t, err, "conflict_key must match")
+}
+
 func TestValidateMutationBatchRejectsSecretEvidence(t *testing.T) {
 	batch := validBatch()
 	batch.Operations[0].Record.Source.Evidence = "Authorization: Bearer do-not-store-this"
@@ -166,12 +182,13 @@ func validBatch() MutationBatch {
 				ID:   "operation-1",
 				Kind: OperationAdd,
 				Record: &MemoryRecord{
-					ID:         "constraint-1",
-					Kind:       MemoryConstraint,
-					Value:      "The first release must support Windows.",
-					Priority:   PriorityCritical,
-					Confidence: ConfidenceExplicit,
-					Status:     StatusActive,
+					ID:          "constraint-1",
+					ConflictKey: "platform.windows_support",
+					Kind:        MemoryConstraint,
+					Value:       "The first release must support Windows.",
+					Priority:    PriorityCritical,
+					Confidence:  ConfidenceExplicit,
+					Status:      StatusActive,
 					Source: SourceReference{
 						EventID:  "event-1",
 						Evidence: "第一版必須支援 Windows",

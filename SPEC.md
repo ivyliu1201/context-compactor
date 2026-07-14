@@ -93,11 +93,32 @@ Supported initial operations are:
 - `expire`: invalidate time-bound or stale state
 
 Every operation refers to its source event. Added records have stable IDs,
-typed kind, priority, confidence, lifecycle status, value, and optional bounded
-evidence or artifact references.
+typed kind, priority, confidence, lifecycle status, value, an optional
+`conflict_key`, and optional bounded evidence or artifact references. A
+conflict key names one semantic slot whose active values are expected to agree.
+Critical records must provide one; non-critical naturally multi-valued records
+may omit it.
 
 Critical records cannot be based only on inferred confidence. They require an
 explicit user statement or repository verification.
+
+### 6.3 Materialized memory view
+
+The deterministic reducer applies durable operations in journal order and
+creates a rebuildable view. Materialized lifecycle states are `active`,
+`superseded`, `resolved`, `expired`, and `duplicate`. Invalid targets or
+lifecycle transitions fail the complete rebuild instead of partially updating
+the view.
+
+Record priority and conflict impact are separate dimensions. Priority remains
+`critical`, `high`, `normal`, or `low`. When active records with the same
+conflict key disagree, the reducer derives `blocking` impact if any involved
+record is critical; otherwise it derives `advisory`. Extractors cannot set or
+downgrade impact.
+
+The reducer stores a deterministic digest and updates its consumer cursor in
+the same transaction as the materialized records and contradictions. The
+immutable journal remains the rebuild source.
 
 ## 7. Context compilation policy
 
@@ -118,6 +139,8 @@ constraints must not depend on search recall.
 - Repository evidence supersedes inferred memory.
 - Conflicting active critical records stop automatic consolidation and surface
   a contradiction for review.
+- Advisory contradictions remain visible but do not by themselves block later
+  automation.
 - Expired and superseded records remain auditable but are not injected as active
   instructions.
 

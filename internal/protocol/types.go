@@ -95,15 +95,16 @@ type SourceReference struct {
 }
 
 type MemoryRecord struct {
-	ID         string          `json:"id"`
-	Kind       MemoryKind      `json:"kind"`
-	Value      string          `json:"value"`
-	Priority   Priority        `json:"priority"`
-	Confidence Confidence      `json:"confidence"`
-	Status     RecordStatus    `json:"status"`
-	Source     SourceReference `json:"source"`
-	CreatedAt  time.Time       `json:"created_at"`
-	ExpiresAt  *time.Time      `json:"expires_at,omitempty"`
+	ID          string          `json:"id"`
+	ConflictKey string          `json:"conflict_key,omitempty"`
+	Kind        MemoryKind      `json:"kind"`
+	Value       string          `json:"value"`
+	Priority    Priority        `json:"priority"`
+	Confidence  Confidence      `json:"confidence"`
+	Status      RecordStatus    `json:"status"`
+	Source      SourceReference `json:"source"`
+	CreatedAt   time.Time       `json:"created_at"`
+	ExpiresAt   *time.Time      `json:"expires_at,omitempty"`
 }
 
 type Operation struct {

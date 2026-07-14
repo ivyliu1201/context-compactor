@@ -20,9 +20,9 @@ Each item must be implemented, verified, reviewed, and committed independently.
 
 ## 2. Deterministic memory reducer
 
-- [ ] Apply validated add, supersede, resolve, and expire operations.
-- [ ] Detect duplicate records and active critical contradictions.
-- [ ] Build a rebuildable materialized memory view.
+- [x] Apply validated add, supersede, resolve, and expire operations.
+- [x] Detect duplicate records and active critical contradictions.
+- [x] Build a rebuildable materialized memory view.
 
 ## 3. Context compiler
 

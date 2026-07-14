@@ -18,6 +18,7 @@ const (
 	maxMetadataKeyRunes      = 64
 	maxMetadataValueRunes    = 1024
 	maxOperations            = 100
+	maxConflictKeyRunes      = 128
 	maxMemoryValueRunes      = 2000
 	maxArtifactRunes         = 1024
 	maxBalancedEvidenceRunes = 280
@@ -25,7 +26,8 @@ const (
 )
 
 var (
-	idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	idPattern          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	conflictKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,127}$`)
 )
 
 func ValidateTransientEvent(event TransientEvent) error {
@@ -156,6 +158,12 @@ func validateMemoryRecord(record MemoryRecord, batch MutationBatch) error {
 	if !validMemoryKind(record.Kind) {
 		return fmt.Errorf("unsupported memory kind %q", record.Kind)
 	}
+	if record.ConflictKey != "" {
+		if !conflictKeyPattern.MatchString(record.ConflictKey) ||
+			utf8.RuneCountInString(record.ConflictKey) > maxConflictKeyRunes {
+			return fmt.Errorf("conflict_key must match %s", conflictKeyPattern.String())
+		}
+	}
 	value := strings.TrimSpace(record.Value)
 	if value == "" {
 		return fmt.Errorf("record value is required")
@@ -174,6 +182,9 @@ func validateMemoryRecord(record MemoryRecord, batch MutationBatch) error {
 	}
 	if record.Priority == PriorityCritical && record.Confidence == ConfidenceInferred {
 		return fmt.Errorf("critical record cannot use inferred confidence")
+	}
+	if record.Priority == PriorityCritical && record.ConflictKey == "" {
+		return fmt.Errorf("critical record requires conflict_key")
 	}
 	if record.Status != StatusActive {
 		return fmt.Errorf("new or replacement record status must equal %q", StatusActive)

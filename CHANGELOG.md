@@ -13,3 +13,6 @@ public release.
 - `context-compactor/v1` protocol foundation and deterministic validation.
 - Repository-local SQLite event journal with checksum-verified migrations,
   idempotent writes, bounded retention, and structured resume checkpoints.
+- Deterministic memory reducer with lifecycle transitions, duplicate detection,
+  derived advisory or blocking contradictions, and rebuildable materialized
+  views.
