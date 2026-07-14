@@ -14,6 +14,8 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [ ] Select and document the SQLite driver before adding the dependency.
 - [ ] Add schema migrations, WAL mode, idempotent event IDs, and retention.
 - [ ] Ensure default persistence excludes complete prompts.
+- [ ] Persist structured resume checkpoints: current progress, last verification,
+      suggested next action, and repository fingerprint.
 - [ ] Test concurrency, interrupted writes, retention, and secret rejection.
 
 ## 2. Deterministic memory reducer
@@ -33,12 +35,18 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [ ] Define the thin adapter interface.
 - [ ] Add Codex CLI hook support.
 - [ ] Add Claude Code hook support.
+- [ ] Detect natural-language resume intent and provide an explicit resume
+      command fallback.
+- [ ] Emit only the four-field Resume Preview and require confirmation before
+      state-changing actions.
 - [ ] Add install, uninstall, status, and doctor commands.
 
 ## 5. Benchmark suite
 
 - [ ] Implement reproducible 10-, 30-, and 50-turn synthetic fixtures.
 - [ ] Add continuous-development, requirement-reversal, and resume scenarios.
+- [ ] Verify Resume Preview fields and that no state-changing action occurs
+      before confirmation.
 - [ ] Compare full transcript, summary-only, strict, and balanced modes.
 - [ ] Report quality gates, median and worst-case results, and token estimates.
 

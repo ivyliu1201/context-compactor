@@ -115,26 +115,50 @@ constraints must not depend on search recall.
 - Expired and superseded records remain auditable but are not injected as active
   instructions.
 
-## 9. Benchmark contract
+## 9. Resume preview gate
+
+On a new session, the adapter may load project memory through a session-start
+hook. When the user asks to resume or continue the project, or invokes an
+explicit resume command, the agent must perform only read-only repository
+reconciliation and return this concise preview:
+
+```text
+目前進度：
+最後驗證：
+建議下一步：
+是否依照以上步驟繼續？
+```
+
+The preview must not add unrelated sections. Repository or checkpoint
+discrepancies are summarized within `目前進度` or `建議下一步`. When no verified
+test record exists, `最後驗證` must state that no verifiable record was found.
+
+Until the user explicitly confirms, the agent must not edit files, install
+dependencies, change configuration, commit, or perform other state-changing
+actions. The user may replace the suggested next step before confirming. A
+manual resume command remains available when an agent host does not expose the
+required hook event.
+
+## 10. Benchmark contract
 
 One turn is one user input followed by one agent response and its tool activity.
 Each implementation milestone is evaluated at 10, 30, and 50 turns against the
 same scenario, repository state, model, and acceptance checks.
 
-### 9.1 Scenario families
+### 10.1 Scenario families
 
 1. Continuous implementation with stable requirements.
 2. Requirement reversal that invalidates an earlier decision.
 3. Compact or new-session recovery followed by continued implementation.
 
-### 9.2 Baselines
+### 10.2 Baselines
 
 - full transcript replay
 - summary-only memory
 - context-compactor `strict`
 - context-compactor `balanced`
 
-### 9.3 Acceptance gates
+### 10.3 Acceptance gates
 
 | Metric | Required result |
 |---|---:|
@@ -151,7 +175,7 @@ Token reduction targets are at least 30% at 10 turns, 60% at 30 turns, and 75%
 at 50 turns. A run that meets token targets but fails a quality gate is a failed
 run.
 
-## 10. Compatibility and versioning
+## 11. Compatibility and versioning
 
 Protocol changes follow semantic compatibility rules:
 
