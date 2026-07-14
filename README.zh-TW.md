@@ -5,7 +5,7 @@
 `context-compactor` 是一個早期開發中的 local-first coding agent 上下文壓縮工具。
 它的目標是在預設不保存完整 prompt 的情況下，保留任務目標、限制、決策與實作狀態。
 
-> 狀態：正在建立 protocol 基礎；目前沒有已發布的執行檔或穩定 CLI。
+> 狀態：已完成 protocol 基礎與本機 SQLite journal；目前沒有已發布的執行檔或穩定 CLI。
 
 ## 設計目標
 
@@ -18,9 +18,11 @@
 
 ## 目前範圍
 
-Repository 目前只包含 `context-compactor/v1` protocol 型別與 deterministic validation
-規則。SQLite journal、reducer、context selection、agent adapters 與發行流程都列在
-[TODO.md](TODO.md)，尚未完成。
+Repository 目前包含 `context-compactor/v1` protocol 型別、deterministic validation
+規則，以及每個 repository 各自使用的本機 SQLite event journal。Journal 已提供
+checksum migration、WAL/FULL durability、冪等事件與 mutation 寫入、保守 retention，
+以及結構化 resume checkpoint。Reducer、context selection、agent adapters 與發行流程
+仍列在 [TODO.md](TODO.md)。
 
 ## 開發
 

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"context-compactor/internal/privacy"
 )
 
 const (
@@ -23,13 +25,7 @@ const (
 )
 
 var (
-	idPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
-	secretPattern = regexp.MustCompile(
-		`(?i)(authorization\s*:\s*(bearer|basic)\s+\S+|` +
-			`(?:api[_-]?key|token|secret|password|passwd|pwd)\s*[:=]\s*["']?\S+|` +
-			`-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|` +
-			`\bsk-[A-Za-z0-9_-]{8,}\b)`,
-	)
+	idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 )
 
 func ValidateTransientEvent(event TransientEvent) error {
@@ -167,6 +163,9 @@ func validateMemoryRecord(record MemoryRecord, batch MutationBatch) error {
 	if utf8.RuneCountInString(value) > maxMemoryValueRunes {
 		return fmt.Errorf("record value exceeds %d characters", maxMemoryValueRunes)
 	}
+	if privacy.ContainsPotentialSecret(value) {
+		return fmt.Errorf("record value appears to contain a secret")
+	}
 	if !validPriority(record.Priority) {
 		return fmt.Errorf("unsupported priority %q", record.Priority)
 	}
@@ -188,6 +187,9 @@ func validateMemoryRecord(record MemoryRecord, batch MutationBatch) error {
 	if utf8.RuneCountInString(record.Source.Artifact) > maxArtifactRunes {
 		return fmt.Errorf("source artifact exceeds %d characters", maxArtifactRunes)
 	}
+	if privacy.ContainsPotentialSecret(record.Source.Artifact) {
+		return fmt.Errorf("source artifact appears to contain a secret")
+	}
 	if err := validateUTCTime("record created_at", record.CreatedAt); err != nil {
 		return err
 	}
@@ -207,7 +209,7 @@ func validateMemoryRecord(record MemoryRecord, batch MutationBatch) error {
 
 func validateEvidence(record MemoryRecord, mode PrivacyMode) error {
 	evidence := strings.TrimSpace(record.Source.Evidence)
-	if secretPattern.MatchString(evidence) {
+	if privacy.ContainsPotentialSecret(evidence) {
 		return fmt.Errorf("source evidence appears to contain a secret")
 	}
 

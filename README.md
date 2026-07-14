@@ -6,8 +6,8 @@
 coding agents. It is designed to preserve goals, constraints, decisions, and
 implementation state without persisting complete prompts by default.
 
-> Status: protocol foundation under development. There is no published binary
-> or stable CLI yet.
+> Status: protocol foundation and local SQLite journal implemented. There is
+> no published binary or stable CLI yet.
 
 ## Design goals
 
@@ -24,10 +24,12 @@ implementation state without persisting complete prompts by default.
 
 ## Current scope
 
-The repository currently contains the `context-compactor/v1` protocol types and
-deterministic validation rules. SQLite journaling, reducers, context selection,
-agent adapters, and distribution are tracked in [TODO.md](TODO.md) and are not
-implemented yet.
+The repository currently contains the `context-compactor/v1` protocol types,
+deterministic validation rules, and a repository-local SQLite event journal.
+The journal provides checksum-verified migrations, WAL/FULL durability,
+idempotent event and mutation writes, conservative retention, and structured
+resume checkpoints. Reducers, context selection, agent adapters, and
+distribution remain tracked in [TODO.md](TODO.md).
 
 ## Development
 

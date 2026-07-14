@@ -11,12 +11,12 @@ Each item must be implemented, verified, reviewed, and committed independently.
 
 ## 1. Local event journal
 
-- [ ] Select and document the SQLite driver before adding the dependency.
-- [ ] Add schema migrations, WAL mode, idempotent event IDs, and retention.
-- [ ] Ensure default persistence excludes complete prompts.
-- [ ] Persist structured resume checkpoints: current progress, last verification,
+- [x] Select and document the SQLite driver before adding the dependency.
+- [x] Add schema migrations, WAL mode, idempotent event IDs, and retention.
+- [x] Ensure default persistence excludes complete prompts.
+- [x] Persist structured resume checkpoints: current progress, last verification,
       suggested next action, and repository fingerprint.
-- [ ] Test concurrency, interrupted writes, retention, and secret rejection.
+- [x] Test concurrency, interrupted writes, retention, and secret rejection.
 
 ## 2. Deterministic memory reducer
 

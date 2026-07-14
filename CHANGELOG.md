@@ -11,3 +11,5 @@ public release.
 
 - Initial bilingual project documentation and Apache-2.0 license.
 - `context-compactor/v1` protocol foundation and deterministic validation.
+- Repository-local SQLite event journal with checksum-verified migrations,
+  idempotent writes, bounded retention, and structured resume checkpoints.

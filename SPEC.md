@@ -46,6 +46,12 @@ SQLite will become the event and memory source of record. Human-readable YAML
 or Markdown output will be generated views that can be rebuilt from validated
 records.
 
+The local journal uses the driver and Schema v1 rules recorded in
+`docs/adr/0001-sqlite-event-journal.md`. In the default schema, extraction runs
+while transient content is available and only event metadata plus validated
+memory operations are durable. This avoids retaining complete prompts merely
+to support later background extraction.
+
 ## 5. Privacy modes
 
 | Mode | Durable content | Default |

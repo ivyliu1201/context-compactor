@@ -69,6 +69,22 @@ func TestValidateMutationBatchRejectsSecretEvidence(t *testing.T) {
 	assertErrorContains(t, err, "source evidence appears to contain a secret")
 }
 
+func TestValidateMutationBatchRejectsSecretRecordValue(t *testing.T) {
+	batch := validBatch()
+	batch.Operations[0].Record.Value = "api_key=do-not-store-this"
+
+	err := ValidateMutationBatch(batch)
+	assertErrorContains(t, err, "record value appears to contain a secret")
+}
+
+func TestValidateMutationBatchRejectsSecretArtifact(t *testing.T) {
+	batch := validBatch()
+	batch.Operations[0].Record.Source.Artifact = "token=<redacted>"
+
+	err := ValidateMutationBatch(batch)
+	assertErrorContains(t, err, "source artifact appears to contain a secret")
+}
+
 func TestValidateMutationBatchRejectsSourceMismatch(t *testing.T) {
 	batch := validBatch()
 	batch.Operations[0].Record.Source.EventID = "event-2"
