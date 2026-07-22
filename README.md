@@ -20,7 +20,8 @@ implementation state without persisting complete prompts by default.
 - Default to balanced privacy: no complete prompt persistence, bounded redacted
   evidence spans, and local-only storage.
 - Support Windows, macOS, and Linux from one Go codebase.
-- Evaluate both token reduction and task-resume quality at 10, 30, and 50 turns.
+- Evaluate token reduction and task-resume quality in one 60-turn run, with
+  checkpoints at turns 10, 30, 50, and 60.
 
 ## Current scope
 

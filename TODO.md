@@ -27,7 +27,11 @@ Each item must be implemented, verified, reviewed, and committed independently.
 ## 3. Context compiler
 
 - [x] Reserve budget for goals, constraints, blockers, and next actions.
+- [ ] Compact oversized mandatory context into a bounded, source-linked
+      recovery capsule without blocking conversation.
 - [ ] Add deterministic recency, priority, and lexical relevance scoring.
+- [ ] Use the last verified capsule plus newer validated operations while a
+      refresh is pending.
 - [ ] Guarantee configured context budget limits.
 
 ## 4. Agent adapters
@@ -39,16 +43,22 @@ Each item must be implemented, verified, reviewed, and committed independently.
       command fallback.
 - [ ] Emit only the four-field Resume Preview and require confirmation before
       state-changing actions.
+- [ ] Refresh context capsules after a turn or during idle time without delaying
+      the foreground response.
 - [ ] Add install, uninstall, status, and doctor commands.
 
 ## 5. Benchmark suite
 
-- [ ] Implement reproducible 10-, 30-, and 50-turn synthetic fixtures.
+- [ ] Implement reproducible 60-turn synthetic fixtures with checkpoints at
+      turns 10, 30, 50, and 60.
 - [ ] Add continuous-development, requirement-reversal, and resume scenarios.
 - [ ] Verify Resume Preview fields and that no state-changing action occurs
       before confirmation.
+- [ ] Verify soft-budget overflow never rejects a user turn and recovery context
+      is reconciled before state-changing actions.
 - [ ] Compare full transcript, summary-only, strict, and balanced modes.
-- [ ] Report quality gates, median and worst-case results, and token estimates.
+- [ ] Report quality gates, median and worst-case results, foreground and
+      compaction token costs, and turns 51-60 context-size stability.
 
 ## 6. Open-source distribution
 

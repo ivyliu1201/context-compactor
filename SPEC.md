@@ -17,9 +17,11 @@ precedence over generated memory.
 3. Apply validated incremental memory operations through a deterministic
    reducer.
 4. Detect contradictions, superseded decisions, and stale working state.
-5. Compile mandatory and relevant memory within a configured token budget.
+5. Compile mandatory and relevant memory within a configured token budget
+   without blocking continued conversation when a soft compaction threshold is
+   exceeded.
 6. Support Codex CLI and Claude Code through thin adapters.
-7. Measure token reduction and resume quality at 10, 30, and 50 turns.
+7. Measure token reduction and resume quality at 10, 30, 50, and 60 turns.
 
 ## 3. Non-goals for the first release
 
@@ -122,7 +124,16 @@ immutable journal remains the rebuild source.
 
 ## 7. Context compilation policy
 
-The compiler will reserve budget in this order:
+Context compilation uses three distinct limits:
+
+- the `trigger budget` is a soft watermark that schedules compaction before the
+  active context becomes expensive
+- the `target budget` is the desired size of a refreshed context capsule
+- the `hard budget` is the maximum compiled input size, configured below the
+  host model limit so tool results and model output still have room
+
+Crossing the trigger or target budget must not reject a user turn. The compiler
+will reserve the hard budget in this order:
 
 1. active goal and acceptance criteria
 2. critical constraints and unresolved contradictions
@@ -132,6 +143,44 @@ The compiler will reserve budget in this order:
 
 Retrieval may improve lower-priority selection, but goals and critical
 constraints must not depend on search recall.
+
+### 7.1 Continuous compaction
+
+The adapter schedules capsule refresh after a turn or during idle time instead
+of making the foreground response wait for compaction. A refresh applies this
+order:
+
+1. exclude expired, superseded, resolved, and duplicate materialized records
+2. remove optional evidence text while retaining source event and artifact
+   references
+3. consolidate older working state into bounded, source-linked derived memory
+4. reduce lower-priority retrieval results before reducing mandatory context
+5. atomically publish a new capsule with its source cursor and digest
+
+If a refresh has not completed before the next turn, the foreground compiler
+uses the last verified capsule plus validated operations after that capsule's
+source cursor. Capsule generation is derived work: it must be restartable from
+the immutable journal and must never replace repository inspection.
+
+Complete prompts remain transient. Any extraction needed for later compaction
+must occur while transient content is available; background work consumes
+validated structured records and bounded privacy-mode evidence, not a newly
+persisted prompt transcript.
+
+### 7.2 Overflow behavior
+
+Exceeding a trigger or target budget is normal control flow, not a user-visible
+failure. If full mandatory records would exceed the hard budget, the compiler
+returns a bounded recovery capsule containing the current goal, next action,
+compact critical-memory descriptors, source references, and an explicit
+retrieval requirement. General conversation may continue.
+
+Before a state-changing action, the adapter must deterministically retrieve and
+reconcile every critical record referenced by that recovery capsule. It must
+not perform the action while required critical context is unavailable or an
+active blocking contradiction remains. A physical host-model input limit may
+still prevent a model call, but ordinary configured-budget pressure must be
+handled without asking the user to end or restart the conversation.
 
 ## 8. Conflict policy
 
@@ -171,8 +220,11 @@ required hook event.
 ## 10. Benchmark contract
 
 One turn is one user input followed by one agent response and its tool activity.
-Each implementation milestone is evaluated at 10, 30, and 50 turns against the
-same scenario, repository state, model, and acceptance checks.
+Each implementation milestone is evaluated with a reproducible 60-turn run and
+checkpoints at turns 10, 30, 50, and 60 against the same scenario, repository
+state, model, and acceptance checks. Compaction is triggered by measured token
+usage rather than a fixed turn number, and its model input and output count
+toward the run's token total.
 
 ### 10.1 Scenario families
 
@@ -198,11 +250,16 @@ same scenario, repository state, model, and acceptance checks.
 | Correct next action | 100% |
 | Secret retained in memory or reports | 0 |
 | Context budget violations | 0 |
+| User turns rejected because a soft budget was exceeded | 0 |
+| State-changing action with unreconciled recovery context | 0 |
 | Task success gap from full transcript | no more than 3 percentage points |
 
 Token reduction targets are at least 30% at 10 turns, 60% at 30 turns, and 75%
-at 50 turns. A run that meets token targets but fails a quality gate is a failed
-run.
+at both 50 and 60 turns. The report must show the reduction trend between the
+50- and 60-turn checkpoints and the per-turn compiled input size for turns
+51-60. A higher 60-turn release target may be set only after a reproducible
+baseline exists. A run that meets token targets but fails a quality gate is a
+failed run.
 
 ## 11. Compatibility and versioning
 
