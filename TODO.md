@@ -47,7 +47,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
       command fallback.
 - [x] Emit only the four-field Resume Preview and require confirmation before
       state-changing actions.
-- [ ] Refresh context capsules after a turn or during idle time without delaying
+- [x] Refresh context capsules after a turn or during idle time without delaying
       the foreground response or allowing stale jobs to overwrite newer state.
 - [ ] Add install, uninstall, status, and doctor commands.
 

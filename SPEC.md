@@ -193,6 +193,13 @@ not overwrite a capsule compiled from newer operations. Consumer or retention
 cursors advance only with successful atomic publication. A crash before
 publication leaves the previous verified capsule usable.
 
+The in-process adapter coordinator schedules the builder asynchronously and
+returns before the builder completes. It assigns a monotonically increasing
+generation per repository scope and publishes only when the completed capsule
+still matches both the fixed source snapshot and the latest scheduled
+generation. Foreground context reads the current verified capsule plus newer
+validated operations without waiting for the refresh result.
+
 Capsule generation is derived work: the MVP compiler must produce it
 deterministically from validated records and must never replace repository
 inspection. Nondeterministic model-generated consolidation is outside this
