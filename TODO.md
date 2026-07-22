@@ -26,17 +26,21 @@ Each item must be implemented, verified, reviewed, and committed independently.
 
 ## 3. Context compiler
 
+- [x] Define host-aware budget invariants, deterministic capsule publication,
+      active-task precedence, and ID-based recovery reconciliation.
 - [x] Reserve budget for goals, constraints, blockers, and next actions.
 - [ ] Compact oversized mandatory context into a bounded, source-linked
       recovery capsule without blocking conversation.
 - [ ] Add deterministic recency, priority, and lexical relevance scoring.
 - [ ] Use the last verified capsule plus newer validated operations while a
       refresh is pending.
-- [ ] Guarantee configured context budget limits.
+- [ ] Guarantee configured context budget limits with a host/model token
+      counter or a documented conservative estimator.
 
 ## 4. Agent adapters
 
-- [ ] Define the thin adapter interface.
+- [ ] Define the thin adapter interface and negotiate one owner for host
+      transcript compaction.
 - [ ] Add Codex CLI hook support.
 - [ ] Add Claude Code hook support.
 - [ ] Detect natural-language resume intent and provide an explicit resume
@@ -44,7 +48,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [ ] Emit only the four-field Resume Preview and require confirmation before
       state-changing actions.
 - [ ] Refresh context capsules after a turn or during idle time without delaying
-      the foreground response.
+      the foreground response or allowing stale jobs to overwrite newer state.
 - [ ] Add install, uninstall, status, and doctor commands.
 
 ## 5. Benchmark suite

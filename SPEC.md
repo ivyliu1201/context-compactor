@@ -124,6 +124,14 @@ immutable journal remains the rebuild source.
 
 ## 7. Context compilation policy
 
+Context compilation has two separate responsibilities. Host transcript
+compaction manages conversational messages and large tool results. The
+context-compactor capsule manages structured, source-linked project memory.
+An adapter must negotiate host capabilities and assign exactly one owner for
+transcript compaction; it must not blindly apply local transcript compaction on
+top of a host-native mechanism. Host compaction output is transient context,
+not an authoritative replacement for the structured memory view.
+
 Context compilation uses three distinct limits:
 
 - the `trigger budget` is a soft watermark that schedules compaction before the
@@ -131,6 +139,13 @@ Context compilation uses three distinct limits:
 - the `target budget` is the desired size of a refreshed context capsule
 - the `hard budget` is the maximum compiled input size, configured below the
   host model limit so tool results and model output still have room
+
+Every configuration must satisfy `0 < target < trigger < hard`. The hard budget
+available to the capsule is the host input limit minus system instructions,
+tool definitions, retained recent messages, expected tool and model output,
+and a configured safety margin. Token measurements identify the host and model
+counter used. A conservative estimator may enforce a safe upper bound, but it
+must not be reported as an exact host-token guarantee.
 
 Crossing the trigger or target budget must not reject a user turn. The compiler
 will reserve the hard budget in this order:
@@ -144,6 +159,14 @@ will reserve the hard budget in this order:
 Retrieval may improve lower-priority selection, but goals and critical
 constraints must not depend on search recall.
 
+`current focus` is derived from the highest-priority applicable active task,
+then newest operation sequence and stable record ID for deterministic ties,
+after reconciliation with the repository and the user's latest explicit
+instruction. `next action` uses that active task first. A resume checkpoint's
+`suggested next action` is only a fallback hint and never overrides active
+memory or current repository evidence. If no candidate remains reliable, the
+compiler reports the value as unknown instead of inferring one.
+
 ### 7.1 Continuous compaction
 
 The adapter schedules capsule refresh after a turn or during idle time instead
@@ -155,12 +178,26 @@ order:
    references
 3. consolidate older working state into bounded, source-linked derived memory
 4. reduce lower-priority retrieval results before reducing mandatory context
-5. atomically publish a new capsule with its source cursor and digest
+5. atomically publish a new capsule with its source cursors and digest
 
 If a refresh has not completed before the next turn, the foreground compiler
 uses the last verified capsule plus validated operations after that capsule's
-source cursor. Capsule generation is derived work: it must be restartable from
-the immutable journal and must never replace repository inspection.
+operation cursor. Each capsule records its last event sequence, last operation
+sequence, materialized-view digest, compiler-policy version, token-counter
+identity, content digest, and creation time.
+
+Only one refresh may publish for a repository scope at a time. A refresh reads
+a fixed source snapshot and publishes with a compare-and-swap check against the
+currently verified capsule. A stale job may be discarded or retried but must
+not overwrite a capsule compiled from newer operations. Consumer or retention
+cursors advance only with successful atomic publication. A crash before
+publication leaves the previous verified capsule usable.
+
+Capsule generation is derived work: the MVP compiler must produce it
+deterministically from validated records and must never replace repository
+inspection. Nondeterministic model-generated consolidation is outside this
+contract until its output, source links, model and prompt-policy versions, and
+validation can be durably reproduced.
 
 Complete prompts remain transient. Any extraction needed for later compaction
 must occur while transient content is available; background work consumes
@@ -173,14 +210,21 @@ Exceeding a trigger or target budget is normal control flow, not a user-visible
 failure. If full mandatory records would exceed the hard budget, the compiler
 returns a bounded recovery capsule containing the current goal, next action,
 compact critical-memory descriptors, source references, and an explicit
-retrieval requirement. General conversation may continue.
+retrieval requirement. Each critical descriptor includes a stable record ID,
+kind, priority, conflict key when present, and source reference. Both sides of
+an active blocking contradiction remain separately addressable and must never
+be merged into one apparently resolved statement. General conversation may
+continue.
 
 Before a state-changing action, the adapter must deterministically retrieve and
-reconcile every critical record referenced by that recovery capsule. It must
-not perform the action while required critical context is unavailable or an
-active blocking contradiction remains. A physical host-model input limit may
-still prevent a model call, but ordinary configured-budget pressure must be
-handled without asking the user to end or restart the conversation.
+reconcile every critical record referenced by that recovery capsule through
+direct ID lookup. This lookup is required source resolution, not relevance
+search; lexical or semantic retrieval may only add optional context. The
+adapter must not perform the action while required critical context is
+unavailable or an active blocking contradiction remains. A physical host-model
+input limit may still prevent a model call, but ordinary configured-budget
+pressure must be handled without asking the user to end or restart the
+conversation.
 
 ## 8. Conflict policy
 
