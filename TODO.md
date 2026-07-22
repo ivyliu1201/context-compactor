@@ -26,7 +26,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 
 ## 3. Context compiler
 
-- [ ] Reserve budget for goals, constraints, blockers, and next actions.
+- [x] Reserve budget for goals, constraints, blockers, and next actions.
 - [ ] Add deterministic recency, priority, and lexical relevance scoring.
 - [ ] Guarantee configured context budget limits.
 
