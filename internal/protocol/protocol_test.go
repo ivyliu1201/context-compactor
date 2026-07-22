@@ -157,6 +157,22 @@ func TestValidateTransientEventAcceptsTransientContent(t *testing.T) {
 	}
 }
 
+func TestValidateTransientEventAcceptsSubagentStart(t *testing.T) {
+	event := TransientEvent{
+		Protocol:   Version,
+		ID:         "event-subagent-1",
+		SessionID:  "session-1",
+		Kind:       EventSubagentStart,
+		OccurredAt: testTime,
+		CWD:        `C:\project`,
+		Metadata:   map[string]string{"agent_id": "agent-1"},
+	}
+
+	if err := ValidateTransientEvent(event); err != nil {
+		t.Fatalf("ValidateTransientEvent() error = %v", err)
+	}
+}
+
 func TestValidateTransientEventRejectsNonUTCDate(t *testing.T) {
 	event := TransientEvent{
 		Protocol:   Version,

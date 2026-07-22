@@ -268,7 +268,7 @@ func validPrivacyMode(mode PrivacyMode) bool {
 
 func validEventKind(kind EventKind) bool {
 	switch kind {
-	case EventSessionStart, EventUserPrompt, EventAssistantResult, EventToolResult,
+	case EventSessionStart, EventSubagentStart, EventUserPrompt, EventAssistantResult, EventToolResult,
 		EventCheckpoint, EventPreCompact, EventPostCompact:
 		return true
 	default:

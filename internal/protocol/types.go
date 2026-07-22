@@ -18,6 +18,7 @@ type EventKind string
 
 const (
 	EventSessionStart    EventKind = "session_start"
+	EventSubagentStart   EventKind = "subagent_start"
 	EventUserPrompt      EventKind = "user_prompt"
 	EventAssistantResult EventKind = "assistant_result"
 	EventToolResult      EventKind = "tool_result"

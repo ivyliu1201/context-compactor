@@ -42,7 +42,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Define the thin adapter interface and negotiate one owner for host
       transcript compaction.
 - [x] Add Codex CLI hook support.
-- [ ] Add Claude Code hook support.
+- [x] Add Claude Code hook support.
 - [ ] Detect natural-language resume intent and provide an explicit resume
       command fallback.
 - [ ] Emit only the four-field Resume Preview and require confirmation before
