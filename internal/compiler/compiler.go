@@ -77,6 +77,7 @@ func ReserveMandatory(
 
 	candidates := mandatoryRecords(view.Records)
 	totalTokens := 0
+	exceedsBudget := false
 	for index := range candidates {
 		candidate := &candidates[index]
 		tokens, err := countTokens(candidate.Record.Record)
@@ -94,9 +95,13 @@ func ReserveMandatory(
 			)
 		}
 		candidate.Tokens = tokens
+		if exceedsBudget || tokens > tokenBudget-totalTokens {
+			exceedsBudget = true
+			continue
+		}
 		totalTokens += tokens
 	}
-	if totalTokens <= tokenBudget {
+	if !exceedsBudget {
 		return Reservation{
 			Records:         candidates,
 			ReservedTokens:  totalTokens,
@@ -321,7 +326,7 @@ func appendRecoveryRecord(
 			record.ID,
 		)
 	}
-	if capsule.Tokens+tokens > tokenBudget {
+	if tokens > tokenBudget-capsule.Tokens {
 		return false, nil
 	}
 	capsule.Records = append(capsule.Records, RecoveryRecord{

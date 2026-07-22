@@ -34,7 +34,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Add deterministic recency, priority, and lexical relevance scoring.
 - [x] Use the last verified capsule plus newer validated operations while a
       refresh is pending.
-- [ ] Guarantee configured context budget limits with a host/model token
+- [x] Guarantee configured context budget limits with a host/model token
       counter or a documented conservative estimator.
 
 ## 4. Agent adapters

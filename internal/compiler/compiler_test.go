@@ -199,6 +199,33 @@ func TestReserveMandatoryValidatesBudgetAndCounter(t *testing.T) {
 	}
 }
 
+func TestReserveMandatoryDoesNotOverflowLargeTokenCounts(t *testing.T) {
+	view := reducer.View{Records: []reducer.MaterializedRecord{
+		compilerRecord("goal", protocol.MemoryGoal, protocol.PriorityCritical, reducer.LifecycleActive, 1),
+		compilerRecord("task", protocol.MemoryTask, protocol.PriorityHigh, reducer.LifecycleActive, 2),
+	}}
+	maxInt := int(^uint(0) >> 1)
+
+	reservation, err := ReserveMandatory(view, 10, func(record protocol.MemoryRecord) (int, error) {
+		if record.Value == "" {
+			return 1, nil
+		}
+		return maxInt, nil
+	})
+	if err != nil {
+		t.Fatalf("ReserveMandatory() error = %v", err)
+	}
+	if reservation.Recovery == nil {
+		t.Fatal("ReserveMandatory() recovery = nil, want bounded recovery capsule")
+	}
+	if reservation.ReservedTokens < 0 || reservation.ReservedTokens > 10 {
+		t.Fatalf("ReserveMandatory() reserved tokens = %d, want 0..10", reservation.ReservedTokens)
+	}
+	if reservation.RemainingTokens < 0 || reservation.RemainingTokens > 10 {
+		t.Fatalf("ReserveMandatory() remaining tokens = %d, want 0..10", reservation.RemainingTokens)
+	}
+}
+
 func compilerRecord(
 	id string,
 	kind protocol.MemoryKind,
