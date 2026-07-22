@@ -32,7 +32,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Compact oversized mandatory context into a bounded, source-linked
       recovery capsule without blocking conversation.
 - [x] Add deterministic recency, priority, and lexical relevance scoring.
-- [ ] Use the last verified capsule plus newer validated operations while a
+- [x] Use the last verified capsule plus newer validated operations while a
       refresh is pending.
 - [ ] Guarantee configured context budget limits with a host/model token
       counter or a documented conservative estimator.
