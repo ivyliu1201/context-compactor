@@ -39,7 +39,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 
 ## 4. Agent adapters
 
-- [ ] Define the thin adapter interface and negotiate one owner for host
+- [x] Define the thin adapter interface and negotiate one owner for host
       transcript compaction.
 - [ ] Add Codex CLI hook support.
 - [ ] Add Claude Code hook support.
