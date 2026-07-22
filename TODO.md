@@ -29,7 +29,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Define host-aware budget invariants, deterministic capsule publication,
       active-task precedence, and ID-based recovery reconciliation.
 - [x] Reserve budget for goals, constraints, blockers, and next actions.
-- [ ] Compact oversized mandatory context into a bounded, source-linked
+- [x] Compact oversized mandatory context into a bounded, source-linked
       recovery capsule without blocking conversation.
 - [ ] Add deterministic recency, priority, and lexical relevance scoring.
 - [ ] Use the last verified capsule plus newer validated operations while a
