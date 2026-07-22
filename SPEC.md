@@ -257,9 +257,11 @@ test record exists, `最後驗證` must state that no verifiable record was foun
 
 Until the user explicitly confirms, the agent must not edit files, install
 dependencies, change configuration, commit, or perform other state-changing
-actions. The user may replace the suggested next step before confirming. A
-manual resume command remains available when an agent host does not expose the
-required hook event.
+actions. The user may replace the suggested next step before confirming. An
+exact manual command `/context-resume` remains available in any session when an
+agent host does not expose the required hook event. Natural-language resume
+intent is recognized only on the first prompt after a new-session boundary;
+ambiguous or host-specific commands such as `/resume` do not trigger this flow.
 
 ## 10. Benchmark contract
 

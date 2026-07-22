@@ -43,7 +43,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
       transcript compaction.
 - [x] Add Codex CLI hook support.
 - [x] Add Claude Code hook support.
-- [ ] Detect natural-language resume intent and provide an explicit resume
+- [x] Detect natural-language resume intent and provide an explicit resume
       command fallback.
 - [ ] Emit only the four-field Resume Preview and require confirmation before
       state-changing actions.
