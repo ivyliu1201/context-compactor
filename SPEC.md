@@ -262,6 +262,11 @@ exact manual command `/context-resume` remains available in any session when an
 agent host does not expose the required hook event. Natural-language resume
 intent is recognized only on the first prompt after a new-session boundary;
 ambiguous or host-specific commands such as `/resume` do not trigger this flow.
+The common adapter gate consumes the latest checkpoint and a host-collected,
+read-only repository snapshot. It grants state-change permission only after the
+current four-field preview has been shown and explicitly confirmed. Replacing
+the suggested next action invalidates the prior preview until the updated
+version is shown and confirmed.
 
 ## 10. Benchmark contract
 

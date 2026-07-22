@@ -45,7 +45,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Add Claude Code hook support.
 - [x] Detect natural-language resume intent and provide an explicit resume
       command fallback.
-- [ ] Emit only the four-field Resume Preview and require confirmation before
+- [x] Emit only the four-field Resume Preview and require confirmation before
       state-changing actions.
 - [ ] Refresh context capsules after a turn or during idle time without delaying
       the foreground response or allowing stale jobs to overwrite newer state.
