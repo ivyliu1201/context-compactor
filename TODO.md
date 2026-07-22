@@ -31,7 +31,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Reserve budget for goals, constraints, blockers, and next actions.
 - [x] Compact oversized mandatory context into a bounded, source-linked
       recovery capsule without blocking conversation.
-- [ ] Add deterministic recency, priority, and lexical relevance scoring.
+- [x] Add deterministic recency, priority, and lexical relevance scoring.
 - [ ] Use the last verified capsule plus newer validated operations while a
       refresh is pending.
 - [ ] Guarantee configured context budget limits with a host/model token
