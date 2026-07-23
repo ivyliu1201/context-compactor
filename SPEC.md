@@ -186,6 +186,22 @@ operation cursor. Each capsule records its last event sequence, last operation
 sequence, materialized-view digest, compiler-policy version, token-counter
 identity, content digest, and creation time.
 
+The verified capsule is a budget-selected derived subset, not a complete
+materialized memory view. The foreground path must keep the verified capsule
+and its newer operation delta separate and must not seed the reducer with
+capsule records or claim that those records reconstruct the complete view.
+Pending operations retain their validated journal order and operation
+semantics. When a complete current view is required, it must be loaded or
+rebuilt from the immutable journal through the pending operation cursor.
+
+Before emitting foreground context, the compiler revalidates the capsule
+content digest and the continuity of every newer operation. It measures the
+complete supported host output, including framing, capsule records, pending
+operations, and separators, with the active counter profile. A capsule's stored
+token-counter identity is provenance and does not authorize reuse of an older
+size measurement; a different active counter requires deterministic
+remeasurement.
+
 Only one refresh may publish for a repository scope at a time. A refresh reads
 a fixed source snapshot and publishes with a compare-and-swap check against the
 currently verified capsule. A stale job may be discarded or retried but must
@@ -222,6 +238,21 @@ kind, priority, conflict key when present, and source reference. Both sides of
 an active blocking contradiction remain separately addressable and must never
 be merged into one apparently resolved statement. General conversation may
 continue.
+
+The combined verified capsule and pending operation delta is subject to the
+same hard budget. If that foreground representation would exceed the hard
+budget, the compiler must not silently truncate the operation delta or apply it
+to the partial capsule as though the capsule were a complete view. It loads or
+rebuilds the journal-backed materialized view through the pending operation
+cursor and runs the normal budget compiler against that view, producing the
+same bounded recovery form described above.
+
+Foreground recovery model input remains bounded by the active hard limit.
+Required record and operation identifiers remain control-plane lookup data and
+must not be rendered into model context. Failure to read or rebuild the
+journal-backed source of record is an operational failure and must not be
+reported as budget exhaustion. Budget pressure alone must not ask the user to
+end, restart, or shorten the conversation.
 
 Before a state-changing action, the adapter must deterministically retrieve and
 reconcile every critical record referenced by that recovery capsule through
