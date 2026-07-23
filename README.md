@@ -6,8 +6,9 @@
 coding agents. It is designed to preserve goals, constraints, decisions, and
 implementation state without persisting complete prompts by default.
 
-> Status: protocol foundation, local SQLite journal, and deterministic memory
-> reducer implemented. There is no published binary or stable CLI yet.
+> Status: the protocol, local SQLite journal, deterministic reducer/compiler,
+> Codex and Claude hook runtime, and durable capsule-refresh handoff are
+> implemented. There is no published binary or stable installation CLI yet.
 
 ## Design goals
 
@@ -26,12 +27,13 @@ implementation state without persisting complete prompts by default.
 ## Current scope
 
 The repository currently contains the `context-compactor/v1` protocol types,
-deterministic validation rules, a repository-local SQLite event journal, and a
-deterministic memory reducer. The reducer applies lifecycle operations, marks
-duplicates, separates record priority from derived conflict impact, detects
-advisory and blocking contradictions, and rebuilds a digest-verified
-materialized view. Context selection, agent adapters, and distribution remain
-tracked in [TODO.md](TODO.md).
+deterministic validation rules, a repository-local SQLite event journal,
+deterministic reducer/compiler, Codex and Claude hook adapters, and an
+executable local runtime. Hook invocations atomically append validated memory
+operations and rebuild the materialized view before emitting bounded context.
+Capsule refreshes are durably queued for a recoverable worker instead of being
+left in a short-lived goroutine. Installation and distribution remain tracked
+in [TODO.md](TODO.md).
 
 ## Development
 
@@ -47,6 +49,33 @@ go vet ./...
 ```
 
 See [SPEC.md](SPEC.md) for the behavioral contract and benchmark gates.
+
+Build and invoke the source-stage executable:
+
+```sh
+go build -o context-compactor ./cmd/context-compactor
+context-compactor hook --host codex --project-root /path/to/repository
+context-compactor hook --host claude --project-root /path/to/repository
+context-compactor refresh-worker --project-root /path/to/repository
+```
+
+The hook reads exactly one host payload from standard input and reserves
+standard output for the host JSON response. Until install commands are added,
+the host hook definition and refresh-worker scheduling must be configured
+manually.
+
+Ordinary prompt text remains transient. The built-in deterministic extractor
+persists only explicit directives such as:
+
+```text
+[context-compactor] goal: Ship the bounded hook runtime.
+[context-compactor] task: Verify the durable refresh worker.
+[context-compactor] resolve: record-id
+```
+
+Supported record names are `goal`, `acceptance_criterion`, `constraint`,
+`decision`, `blocker`, `question`, `task`, `file`, and `test_result`; lifecycle
+directives are `resolve` and `expire`.
 
 ## Privacy model
 

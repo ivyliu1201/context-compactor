@@ -9,6 +9,7 @@ import (
 	"io"
 	"time"
 
+	coreadapter "context-compactor/internal/adapter"
 	"context-compactor/internal/adapter/claude"
 	"context-compactor/internal/adapter/codex"
 	"context-compactor/internal/protocol"
@@ -24,7 +25,10 @@ const (
 // Result contains only host-visible data produced while handling one transient
 // event. Durable work remains the Handler implementation's responsibility.
 type Result struct {
-	AdditionalContext string
+	AdditionalContext         string
+	TranscriptCompactionOwner coreadapter.TranscriptCompactionOwner
+	RequiresRetrieval         bool
+	RequiredLookupIDs         []string
 }
 
 // Handler consumes transient event content before it leaves the hook process.
@@ -94,9 +98,29 @@ func ExecuteHook(
 		return fmt.Errorf("unsupported hook host %q", host)
 	}
 
+	owner, err := resolveHostTranscriptOwner(host)
+	if err != nil {
+		return err
+	}
+	if event.Metadata == nil {
+		event.Metadata = make(map[string]string)
+	}
+	event.Metadata["transcript_compaction_owner"] = string(owner)
+	if err := protocol.ValidateTransientEvent(event); err != nil {
+		return fmt.Errorf("validate %s hook owner metadata: %w", host, err)
+	}
+
 	result, err := handler.Handle(ctx, event)
 	if err != nil {
 		return fmt.Errorf("handle %s %s event: %w", host, event.Kind, err)
+	}
+	if result.TranscriptCompactionOwner != "" &&
+		result.TranscriptCompactionOwner != owner {
+		return fmt.Errorf(
+			"handle %s %s event changed transcript compaction owner",
+			host,
+			event.Kind,
+		)
 	}
 
 	var encoded bytes.Buffer
@@ -107,4 +131,23 @@ func ExecuteHook(
 		return fmt.Errorf("write %s %s output: %w", host, event.Kind, err)
 	}
 	return nil
+}
+
+func resolveHostTranscriptOwner(
+	host Host,
+) (coreadapter.TranscriptCompactionOwner, error) {
+	var capabilities coreadapter.HostCapabilities
+	switch host {
+	case HostCodex:
+		capabilities = codex.HostCapabilities()
+	case HostClaude:
+		capabilities = claude.HostCapabilities()
+	default:
+		return "", fmt.Errorf("unsupported hook host %q", host)
+	}
+	owner, err := coreadapter.ResolveTranscriptCompactionOwner(capabilities)
+	if err != nil {
+		return "", fmt.Errorf("negotiate %s transcript compaction owner: %w", host, err)
+	}
+	return owner, nil
 }

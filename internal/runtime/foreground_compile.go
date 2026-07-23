@@ -78,7 +78,7 @@ func (foreground ForegroundCompiler) Compile(
 	}
 	renderedPending, err := compiler.RenderPendingContext(pending, limits.Hard)
 	if err == nil {
-		return pendingCompileResult(renderedPending), nil
+		return pendingCompileResult(renderedPending, pending.Capsule), nil
 	}
 	if !errors.Is(err, compiler.ErrPendingContextExceedsHardBudget) {
 		return ForegroundCompileResult{}, fmt.Errorf("render pending context: %w", err)
@@ -129,16 +129,23 @@ func (foreground ForegroundCompiler) Compile(
 
 func pendingCompileResult(
 	rendered compiler.PendingRenderResult,
+	capsule compiler.VerifiedCapsule,
 ) ForegroundCompileResult {
-	return ForegroundCompileResult{
+	result := ForegroundCompileResult{
 		Text:                rendered.Text,
 		UsedTokens:          rendered.UsedTokens,
 		RemainingHardTokens: rendered.RemainingHardTokens,
 		CounterIdentity:     rendered.CounterIdentity,
 		CounterMode:         rendered.CounterMode,
 		CounterDescription:  rendered.CounterDescription,
-		RequiredLookupIDs:   make([]string, 0),
+		RequiresRetrieval:   len(capsule.RequiredLookupIDs) > 0,
+		RequiredLookupIDs:   make([]string, 0, len(capsule.RequiredLookupIDs)),
 	}
+	result.RequiredLookupIDs = append(
+		result.RequiredLookupIDs,
+		capsule.RequiredLookupIDs...,
+	)
+	return result
 }
 
 func rebuiltCompileResult(

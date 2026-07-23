@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ type CapsuleMetadata struct {
 	CompilerPolicyVersion string
 	TokenCounterIdentity  string
 	CreatedAt             time.Time
+	RequiredLookupIDs     []string
 }
 
 // VerifiedCapsule is immutable derived context tied to an exact source view.
@@ -37,6 +39,7 @@ type VerifiedCapsule struct {
 	TokenCounterIdentity  string
 	CreatedAt             time.Time
 	ContentDigest         string
+	RequiredLookupIDs     []string
 }
 
 // PendingContext keeps the last verified capsule separate from newer durable
@@ -63,6 +66,7 @@ func SealVerifiedCapsule(
 		CompilerPolicyVersion: metadata.CompilerPolicyVersion,
 		TokenCounterIdentity:  metadata.TokenCounterIdentity,
 		CreatedAt:             metadata.CreatedAt,
+		RequiredLookupIDs:     cloneStrings(metadata.RequiredLookupIDs),
 	}
 	digest, err := calculateCapsuleDigest(capsule)
 	if err != nil {
@@ -158,6 +162,16 @@ func validateCapsuleMetadata(metadata CapsuleMetadata) error {
 	if zoneOffset != 0 {
 		return fmt.Errorf("created_at must use UTC, got zone %q", zoneName)
 	}
+	seenLookupIDs := make(map[string]struct{}, len(metadata.RequiredLookupIDs))
+	for index, id := range metadata.RequiredLookupIDs {
+		if !capsuleLookupIDPattern.MatchString(id) {
+			return fmt.Errorf("required_lookup_ids[%d] is not a valid record id", index)
+		}
+		if _, exists := seenLookupIDs[id]; exists {
+			return fmt.Errorf("required_lookup_ids[%d] duplicates %q", index, id)
+		}
+		seenLookupIDs[id] = struct{}{}
+	}
 	return nil
 }
 
@@ -169,6 +183,7 @@ func verifyCapsule(capsule VerifiedCapsule) error {
 		CompilerPolicyVersion: capsule.CompilerPolicyVersion,
 		TokenCounterIdentity:  capsule.TokenCounterIdentity,
 		CreatedAt:             capsule.CreatedAt,
+		RequiredLookupIDs:     capsule.RequiredLookupIDs,
 	}
 	if err := validateCapsuleMetadata(metadata); err != nil {
 		return fmt.Errorf("verify capsule metadata: %w", err)
@@ -199,6 +214,7 @@ func calculateCapsuleDigest(capsule VerifiedCapsule) (string, error) {
 		CompilerPolicyVersion string          `json:"compiler_policy_version"`
 		TokenCounterIdentity  string          `json:"token_counter_identity"`
 		CreatedAt             time.Time       `json:"created_at"`
+		RequiredLookupIDs     []string        `json:"required_lookup_ids,omitempty"`
 	}{
 		Records:               capsule.Records,
 		SourceEventSeq:        capsule.SourceEventSeq,
@@ -207,6 +223,7 @@ func calculateCapsuleDigest(capsule VerifiedCapsule) (string, error) {
 		CompilerPolicyVersion: capsule.CompilerPolicyVersion,
 		TokenCounterIdentity:  capsule.TokenCounterIdentity,
 		CreatedAt:             capsule.CreatedAt,
+		RequiredLookupIDs:     capsule.RequiredLookupIDs,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -243,6 +260,7 @@ func validSHA256(value string) bool {
 
 func cloneVerifiedCapsule(capsule VerifiedCapsule) VerifiedCapsule {
 	capsule.Records = cloneCapsuleRecords(capsule.Records)
+	capsule.RequiredLookupIDs = cloneStrings(capsule.RequiredLookupIDs)
 	return capsule
 }
 
@@ -269,4 +287,13 @@ func cloneProtocolRecord(record protocol.MemoryRecord) protocol.MemoryRecord {
 		record.ExpiresAt = &expiresAt
 	}
 	return record
+}
+
+var capsuleLookupIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string(nil), values...)
 }

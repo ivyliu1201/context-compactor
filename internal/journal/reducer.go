@@ -20,6 +20,60 @@ type MemoryViewSnapshot struct {
 	LastEventSeq int64
 }
 
+// AppendAndRebuildMemoryView validates, appends, reduces, and materializes one
+// event in a single transaction. Invalid lifecycle operations cannot poison
+// the durable journal while leaving the view unchanged.
+func (store *Store) AppendAndRebuildMemoryView(
+	ctx context.Context,
+	request AppendRequest,
+) (AppendResult, MemoryViewSnapshot, error) {
+	prepared, err := store.prepareAppend(request)
+	if err != nil {
+		return AppendResult{}, MemoryViewSnapshot{}, err
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AppendResult{}, MemoryViewSnapshot{}, fmt.Errorf(
+			"begin journal append and rebuild: %w",
+			err,
+		)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	appendResult, err := appendInTransaction(ctx, tx, request, prepared)
+	if err != nil {
+		return AppendResult{}, MemoryViewSnapshot{}, err
+	}
+	operations, err := readReductionOperations(ctx, tx)
+	if err != nil {
+		return AppendResult{}, MemoryViewSnapshot{}, err
+	}
+	view, err := reducer.Build(operations)
+	if err != nil {
+		return AppendResult{}, MemoryViewSnapshot{}, fmt.Errorf(
+			"reduce appended memory operations: %w",
+			err,
+		)
+	}
+	lastEventSeq, err := readLastEventSeq(ctx, tx)
+	if err != nil {
+		return AppendResult{}, MemoryViewSnapshot{}, err
+	}
+	if err := replaceMemoryView(ctx, tx, view, lastEventSeq); err != nil {
+		return AppendResult{}, MemoryViewSnapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AppendResult{}, MemoryViewSnapshot{}, fmt.Errorf(
+			"commit journal append and rebuild: %w",
+			err,
+		)
+	}
+	return appendResult, MemoryViewSnapshot{
+		View:         view,
+		LastEventSeq: lastEventSeq,
+	}, nil
+}
+
 func (store *Store) RebuildMemoryView(ctx context.Context) (MemoryViewSnapshot, error) {
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -57,59 +57,73 @@ func (handler JournalHandler) Handle(
 	ctx context.Context,
 	event protocol.TransientEvent,
 ) (Result, error) {
-	if ctx == nil {
-		return Result{}, fmt.Errorf("handler context is required")
-	}
-	if handler.Extractor == nil {
-		return Result{}, fmt.Errorf("extractor is required")
-	}
 	if handler.Journal == nil {
 		return Result{}, fmt.Errorf("journal is required")
 	}
+	request, err := handler.Prepare(ctx, event)
+	if err != nil {
+		return Result{}, err
+	}
+	if _, err := handler.Journal.Append(ctx, request); err != nil {
+		return Result{}, fmt.Errorf("append journal event: %w", err)
+	}
+	return Result{}, nil
+}
+
+// Prepare consumes transient content and returns only the validated bounded
+// request that is safe to hand to a journal transaction.
+func (handler JournalHandler) Prepare(
+	ctx context.Context,
+	event protocol.TransientEvent,
+) (journal.AppendRequest, error) {
+	if ctx == nil {
+		return journal.AppendRequest{}, fmt.Errorf("handler context is required")
+	}
+	if handler.Extractor == nil {
+		return journal.AppendRequest{}, fmt.Errorf("extractor is required")
+	}
 	if err := protocol.ValidateTransientEvent(event); err != nil {
-		return Result{}, fmt.Errorf("validate transient event: %w", err)
+		return journal.AppendRequest{}, fmt.Errorf("validate transient event: %w", err)
 	}
 	if err := validatePrivacyMode(handler.PrivacyMode); err != nil {
-		return Result{}, err
+		return journal.AppendRequest{}, err
 	}
 
 	adapter := strings.TrimSpace(event.Metadata["host"])
 	if adapter == "" {
-		return Result{}, fmt.Errorf("event host metadata is required")
+		return journal.AppendRequest{}, fmt.Errorf("event host metadata is required")
 	}
 
 	extraction, err := handler.Extractor.Extract(ctx, event, handler.PrivacyMode)
 	if err != nil {
-		return Result{}, fmt.Errorf("extract mutation batch: %w", err)
+		return journal.AppendRequest{}, fmt.Errorf("extract mutation batch: %w", err)
 	}
 	if extraction.RedactionCount < 0 {
-		return Result{}, fmt.Errorf("redaction count must not be negative")
+		return journal.AppendRequest{}, fmt.Errorf("redaction count must not be negative")
 	}
 	if extraction.Batch != nil {
 		if err := protocol.ValidateMutationBatch(*extraction.Batch); err != nil {
-			return Result{}, fmt.Errorf("validate mutation batch: %w", err)
+			return journal.AppendRequest{}, fmt.Errorf("validate mutation batch: %w", err)
 		}
 		if extraction.Batch.SourceEventID != event.ID {
-			return Result{}, fmt.Errorf("mutation batch source event must match event id")
+			return journal.AppendRequest{}, fmt.Errorf(
+				"mutation batch source event must match event id",
+			)
 		}
 		if extraction.Batch.PrivacyMode != handler.PrivacyMode {
-			return Result{}, fmt.Errorf(
+			return journal.AppendRequest{}, fmt.Errorf(
 				"mutation batch privacy mode must match handler privacy mode",
 			)
 		}
 	}
 
-	_, err = handler.Journal.Append(ctx, journal.AppendRequest{
+	return journal.AppendRequest{
 		Event:          event,
 		Adapter:        adapter,
 		PrivacyMode:    handler.PrivacyMode,
 		RedactionCount: extraction.RedactionCount,
 		Batch:          extraction.Batch,
-	})
-	if err != nil {
-		return Result{}, fmt.Errorf("append journal event: %w", err)
-	}
-	return Result{}, nil
+	}, nil
 }
 
 func validatePrivacyMode(mode protocol.PrivacyMode) error {

@@ -162,6 +162,47 @@ CREATE TABLE memory_view_state (
 ) STRICT;
 `,
 	},
+	{
+		version: 3,
+		sql: `
+CREATE TABLE verified_capsules (
+    repository_scope TEXT PRIMARY KEY,
+    source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
+    source_operation_seq INTEGER NOT NULL CHECK (source_operation_seq >= 0),
+    source_view_digest TEXT NOT NULL CHECK (length(source_view_digest) = 64),
+    compiler_policy_version TEXT NOT NULL,
+    token_counter_identity TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
+    capsule_json TEXT NOT NULL CHECK (json_valid(capsule_json)),
+    published_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE capsule_refresh_jobs (
+    job_id TEXT PRIMARY KEY CHECK (length(job_id) = 64),
+    repository_scope TEXT NOT NULL,
+    trigger TEXT NOT NULL CHECK (trigger IN ('after_turn', 'during_idle')),
+    source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
+    source_operation_seq INTEGER NOT NULL CHECK (source_operation_seq >= 0),
+    source_view_digest TEXT NOT NULL CHECK (length(source_view_digest) = 64),
+    status TEXT NOT NULL
+        CHECK (status IN ('pending', 'processing', 'completed', 'discarded')),
+    attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
+    enqueued_at TEXT NOT NULL,
+    lease_until TEXT,
+    completed_at TEXT,
+    UNIQUE (
+        repository_scope,
+        source_event_seq,
+        source_operation_seq,
+        source_view_digest
+    )
+) STRICT;
+
+CREATE INDEX capsule_refresh_jobs_claim_idx
+    ON capsule_refresh_jobs(status, lease_until, source_operation_seq, source_event_seq);
+`,
+	},
 }
 
 const migrationTableSQL = `

@@ -65,6 +65,22 @@ func (store *Store) Append(ctx context.Context, request AppendRequest) (AppendRe
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	result, err := appendInTransaction(ctx, tx, request, prepared)
+	if err != nil {
+		return AppendResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AppendResult{}, fmt.Errorf("commit journal append: %w", err)
+	}
+	return result, nil
+}
+
+func appendInTransaction(
+	ctx context.Context,
+	tx *sql.Tx,
+	request AppendRequest,
+	prepared preparedAppend,
+) (AppendResult, error) {
 	eventSeq, eventInserted, err := insertEvent(ctx, tx, prepared.event)
 	if err != nil {
 		return AppendResult{}, err
@@ -81,10 +97,6 @@ func (store *Store) Append(ctx context.Context, request AppendRequest) (AppendRe
 				operationsInserted++
 			}
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return AppendResult{}, fmt.Errorf("commit journal append: %w", err)
 	}
 	return AppendResult{
 		EventSeq:           eventSeq,

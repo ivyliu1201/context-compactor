@@ -64,7 +64,7 @@ func Negotiate(ctx context.Context, host Adapter) (NegotiatedAdapter, error) {
 		return NegotiatedAdapter{}, fmt.Errorf("host id is required")
 	}
 
-	owner, err := selectTranscriptCompactionOwner(capabilities)
+	owner, err := ResolveTranscriptCompactionOwner(capabilities)
 	if err != nil {
 		return NegotiatedAdapter{}, fmt.Errorf("host %q: %w", hostID, err)
 	}
@@ -98,7 +98,9 @@ func (negotiated NegotiatedAdapter) InjectContext(
 	})
 }
 
-func selectTranscriptCompactionOwner(
+// ResolveTranscriptCompactionOwner applies the shared single-owner rule for
+// runtime paths that do not use the injection-oriented NegotiatedAdapter.
+func ResolveTranscriptCompactionOwner(
 	capabilities HostCapabilities,
 ) (TranscriptCompactionOwner, error) {
 	if capabilities.NativeTranscriptCompaction {

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func TestJournalHandlerExtractsValidatesAndAppends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
-	if result != (Result{}) {
+	if !reflect.DeepEqual(result, Result{}) {
 		t.Fatalf("Handle() result = %+v, want empty result", result)
 	}
 	if extractor.event.Content != event.Content {
