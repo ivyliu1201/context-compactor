@@ -245,6 +245,66 @@ func TestLoadOperationsAfterRejectsNegativeCursor(t *testing.T) {
 	}
 }
 
+func TestLoadOperationsThroughReturnsInclusiveOrderedSnapshot(t *testing.T) {
+	store, root := openTestStore(t)
+	for sequence := 1; sequence <= 3; sequence++ {
+		appendReducerOperation(t, store, root, sequence, protocol.Operation{
+			ID:   fmt.Sprintf("operation-%d", sequence),
+			Kind: protocol.OperationAdd,
+			Record: reducerTestRecord(
+				fmt.Sprintf("task-%d", sequence),
+				fmt.Sprintf("task.%d", sequence),
+				fmt.Sprintf("Task %d", sequence),
+				protocol.MemoryTask,
+				protocol.PriorityNormal,
+			),
+		})
+	}
+
+	empty, err := store.LoadOperationsThrough(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("LoadOperationsThrough(0) error = %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("LoadOperationsThrough(0) = %+v, want empty", empty)
+	}
+
+	throughTwo, err := store.LoadOperationsThrough(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("LoadOperationsThrough(2) error = %v", err)
+	}
+	if len(throughTwo) != 2 ||
+		throughTwo[0].OperationSeq != 1 ||
+		throughTwo[1].OperationSeq != 2 {
+		t.Fatalf(
+			"LoadOperationsThrough(2) = %+v, want sequences 1 and 2",
+			throughTwo,
+		)
+	}
+	if throughTwo[1].Operation.Record == nil ||
+		throughTwo[1].Operation.Record.ID != "task-2" ||
+		throughTwo[1].SourceEventID != "event-2" {
+		t.Fatalf("second snapshot operation = %+v, want decoded task-2", throughTwo[1])
+	}
+
+	all, err := store.LoadOperationsThrough(context.Background(), 99)
+	if err != nil {
+		t.Fatalf("LoadOperationsThrough(99) error = %v", err)
+	}
+	if len(all) != 3 || all[2].OperationSeq != 3 {
+		t.Fatalf("LoadOperationsThrough(99) = %+v, want all three operations", all)
+	}
+}
+
+func TestLoadOperationsThroughRejectsNegativeCursor(t *testing.T) {
+	store, _ := openTestStore(t)
+
+	_, err := store.LoadOperationsThrough(context.Background(), -1)
+	if err == nil || !strings.Contains(err.Error(), "must not be negative") {
+		t.Fatalf("LoadOperationsThrough(-1) error = %v", err)
+	}
+}
+
 func appendReducerOperation(
 	t *testing.T,
 	store *Store,

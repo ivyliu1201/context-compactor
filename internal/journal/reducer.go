@@ -134,6 +134,32 @@ func (store *Store) LoadOperationsAfter(
 	return operations, nil
 }
 
+// LoadOperationsThrough returns durable operations up to and including the
+// supplied operation cursor in ascending sequence order.
+func (store *Store) LoadOperationsThrough(
+	ctx context.Context,
+	operationSeq int64,
+) ([]reducer.OperationEnvelope, error) {
+	if operationSeq < 0 {
+		return nil, fmt.Errorf("operation sequence cursor must not be negative")
+	}
+
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin operation snapshot read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	operations, err := readReductionOperationsThrough(ctx, tx, operationSeq)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit operation snapshot read: %w", err)
+	}
+	return operations, nil
+}
+
 func readReductionOperations(ctx context.Context, tx *sql.Tx) ([]reducer.OperationEnvelope, error) {
 	return readReductionOperationsAfter(ctx, tx, 0)
 }
@@ -158,6 +184,33 @@ ORDER BY operation.seq`,
 	}
 	defer rows.Close()
 
+	return scanReductionOperations(rows)
+}
+
+func readReductionOperationsThrough(
+	ctx context.Context,
+	tx *sql.Tx,
+	operationSeq int64,
+) ([]reducer.OperationEnvelope, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT operation.seq, event.seq, operation.source_event_id,
+       operation.privacy_mode, operation.created_at, operation.operation_id,
+       operation.kind, operation.target_id, operation.record_json
+FROM memory_operations AS operation
+JOIN events AS event ON event.event_id = operation.source_event_id
+WHERE operation.seq <= ?
+ORDER BY operation.seq`,
+		operationSeq,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read reduction operation snapshot: %w", err)
+	}
+	defer rows.Close()
+
+	return scanReductionOperations(rows)
+}
+
+func scanReductionOperations(rows *sql.Rows) ([]reducer.OperationEnvelope, error) {
 	var operations []reducer.OperationEnvelope
 	for rows.Next() {
 		var envelope reducer.OperationEnvelope
@@ -176,10 +229,11 @@ ORDER BY operation.seq`,
 		); err != nil {
 			return nil, fmt.Errorf("scan reduction operation: %w", err)
 		}
-		envelope.CreatedAt, err = parseTime(createdAt)
+		parsedCreatedAt, err := parseTime(createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse operation %q created_at: %w", envelope.Operation.ID, err)
 		}
+		envelope.CreatedAt = parsedCreatedAt
 		envelope.Operation.Kind = protocol.OperationKind(operationKind)
 		if targetID.Valid {
 			envelope.Operation.TargetID = targetID.String
