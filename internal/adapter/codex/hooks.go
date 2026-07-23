@@ -22,6 +22,7 @@ type HookEventName string
 
 const (
 	EventSessionStart     HookEventName = "SessionStart"
+	EventSubagentStart    HookEventName = "SubagentStart"
 	EventUserPromptSubmit HookEventName = "UserPromptSubmit"
 	EventPreCompact       HookEventName = "PreCompact"
 	EventPostCompact      HookEventName = "PostCompact"
@@ -61,6 +62,8 @@ func DecodeHook(reader io.Reader, occurredAt time.Time) (DecodedHook, error) {
 	switch route.HookEventName {
 	case EventSessionStart:
 		decoded, err = decodeSessionStart(raw, occurredAt)
+	case EventSubagentStart:
+		decoded, err = decodeSubagentStart(raw, occurredAt)
 	case EventUserPromptSubmit:
 		decoded, err = decodeUserPromptSubmit(raw, occurredAt)
 	case EventPreCompact, EventPostCompact:
@@ -81,7 +84,7 @@ func DecodeHook(reader io.Reader, occurredAt time.Time) (DecodedHook, error) {
 }
 
 // WriteOutput writes the JSON object Codex expects on hook stdout. Only
-// SessionStart and UserPromptSubmit support additionalContext.
+// SessionStart, SubagentStart, and UserPromptSubmit support additionalContext.
 func WriteOutput(writer io.Writer, eventName HookEventName, additionalContext string) error {
 	if writer == nil {
 		return fmt.Errorf("Codex hook output writer is required")
@@ -89,7 +92,7 @@ func WriteOutput(writer io.Writer, eventName HookEventName, additionalContext st
 
 	output := hookOutput{Continue: true}
 	switch eventName {
-	case EventSessionStart, EventUserPromptSubmit:
+	case EventSessionStart, EventSubagentStart, EventUserPromptSubmit:
 		if additionalContext != "" {
 			output.HookSpecificOutput = &hookSpecificOutput{
 				HookEventName:     eventName,
@@ -131,6 +134,18 @@ type userPromptSubmitInput struct {
 	Prompt         requiredString `json:"prompt"`
 	AgentID        optionalString `json:"agent_id,omitempty"`
 	AgentType      optionalString `json:"agent_type,omitempty"`
+}
+
+type subagentStartInput struct {
+	SessionID      string         `json:"session_id"`
+	TurnID         string         `json:"turn_id"`
+	TranscriptPath nullableString `json:"transcript_path"`
+	CWD            string         `json:"cwd"`
+	HookEventName  HookEventName  `json:"hook_event_name"`
+	Model          string         `json:"model"`
+	PermissionMode string         `json:"permission_mode"`
+	AgentID        optionalString `json:"agent_id"`
+	AgentType      optionalString `json:"agent_type"`
 }
 
 type compactInput struct {
@@ -278,6 +293,55 @@ func decodeUserPromptSubmit(raw []byte, occurredAt time.Time) (DecodedHook, erro
 	)
 	event.Content = input.Prompt.value
 	return DecodedHook{Name: input.HookEventName, Event: event}, nil
+}
+
+func decodeSubagentStart(raw []byte, occurredAt time.Time) (DecodedHook, error) {
+	var input subagentStartInput
+	if err := decodeStrict(raw, &input); err != nil {
+		return DecodedHook{}, err
+	}
+	if err := requireTurn(
+		input.SessionID,
+		input.TurnID,
+		input.CWD,
+		input.Model,
+		input.HookEventName,
+		EventSubagentStart,
+		input.TranscriptPath.present,
+	); err != nil {
+		return DecodedHook{}, err
+	}
+	if !oneOf(input.PermissionMode, "default", "acceptEdits", "plan", "dontAsk", "bypassPermissions") {
+		return DecodedHook{}, fmt.Errorf("unsupported permission_mode %q", input.PermissionMode)
+	}
+	if strings.TrimSpace(string(input.AgentID)) == "" {
+		return DecodedHook{}, fmt.Errorf("agent_id is required")
+	}
+	if strings.TrimSpace(string(input.AgentType)) == "" {
+		return DecodedHook{}, fmt.Errorf("agent_type is required")
+	}
+
+	metadata := turnMetadata(
+		input.HookEventName,
+		input.Model,
+		input.TurnID,
+		string(input.AgentID),
+		string(input.AgentType),
+	)
+	metadata["permission_mode"] = input.PermissionMode
+	return DecodedHook{
+		Name: input.HookEventName,
+		Event: newTransientEvent(
+			input.SessionID,
+			input.CWD,
+			protocol.EventSubagentStart,
+			occurredAt,
+			metadata,
+			input.TurnID,
+			string(input.AgentID),
+			string(input.AgentType),
+		),
+	}, nil
 }
 
 func decodeCompact(

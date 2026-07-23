@@ -37,6 +37,13 @@ func TestDecodeHookNormalizesSupportedCodexEvents(t *testing.T) {
 			wantMetadata: map[string]string{"turn_id": "turn-7", "agent_id": "agent-1"},
 		},
 		{
+			name:         "subagent start",
+			input:        `{"session_id":"session-1","turn_id":"turn-7","transcript_path":null,"cwd":"C:\\repo","hook_event_name":"SubagentStart","model":"gpt-5","permission_mode":"plan","agent_id":"agent-1","agent_type":"worker"}`,
+			wantName:     EventSubagentStart,
+			wantKind:     protocol.EventSubagentStart,
+			wantMetadata: map[string]string{"turn_id": "turn-7", "agent_id": "agent-1", "agent_type": "worker", "permission_mode": "plan"},
+		},
+		{
 			name:         "pre compact",
 			input:        `{"session_id":"session-1","turn_id":"turn-7","transcript_path":null,"cwd":"C:\\repo","hook_event_name":"PreCompact","model":"gpt-5","trigger":"auto"}`,
 			wantName:     EventPreCompact,
@@ -134,6 +141,11 @@ func TestDecodeHookRejectsInvalidCodexInput(t *testing.T) {
 			want:  "prompt is required",
 		},
 		{
+			name:  "missing subagent id",
+			input: `{"session_id":"session-1","turn_id":"turn-7","transcript_path":null,"cwd":"C:\\repo","hook_event_name":"SubagentStart","model":"gpt-5","permission_mode":"default","agent_type":"worker"}`,
+			want:  "agent_id is required",
+		},
+		{
 			name:  "null optional agent id",
 			input: `{"session_id":"session-1","turn_id":"turn-7","transcript_path":null,"cwd":"C:\\repo","hook_event_name":"PreCompact","model":"gpt-5","trigger":"auto","agent_id":null}`,
 			want:  "must be a string",
@@ -161,7 +173,7 @@ func TestDecodeHookRejectsInvalidCodexInput(t *testing.T) {
 }
 
 func TestWriteOutputUsesOnlySupportedAdditionalContextEvents(t *testing.T) {
-	for _, eventName := range []HookEventName{EventSessionStart, EventUserPromptSubmit} {
+	for _, eventName := range []HookEventName{EventSessionStart, EventSubagentStart, EventUserPromptSubmit} {
 		var output bytes.Buffer
 		if err := WriteOutput(&output, eventName, "bounded capsule"); err != nil {
 			t.Fatalf("WriteOutput(%s) error = %v", eventName, err)
