@@ -233,6 +233,41 @@ input limit may still prevent a model call, but ordinary configured-budget
 pressure must be handled without asking the user to end or restart the
 conversation.
 
+### 7.3 Executable hook runtime
+
+Before adapter management commands may install host hooks, a distributable
+local executable must provide the runtime bridge between Codex or Claude hook
+processes and the pipeline defined in Section 4. For each invocation, the
+runtime must:
+
+1. read exactly one host hook payload from standard input and decode it through
+   the matching thin adapter
+2. run privacy filtering and extraction while transient content is available,
+   producing only validated protocol operations for durable storage
+3. idempotently append durable event metadata and operations, then load or
+   rebuild the repository-scoped memory view
+4. supply the last verified capsule plus newer validated operations to the
+   foreground path and emit only output supported by that host event
+
+The runtime must preserve the transcript-compaction owner negotiated by the
+adapter and must not read transcript contents merely because a hook supplies a
+transcript path. Complete prompts remain transient under the selected privacy
+mode. Standard output is reserved for the host protocol; diagnostics go to
+standard error and must not expose prompts, transcript paths, secrets, or
+generated capsule contents.
+
+The lifecycle of background refresh work must satisfy Section 7.1. A
+short-lived hook process must durably enqueue the refresh before returning or
+hand it to a running local worker. It must not start an in-memory background
+goroutine and exit while reporting that the work was scheduled. Retries use
+stable event identity and journal idempotency, and invalid input or unavailable
+required state fails before partial durable mutation or malformed host output.
+
+Installation is not considered successful unless the executable is resolvable,
+the selected host runtime path is healthy, and `doctor` can verify the installed
+hook definition. Until those conditions are met, installation must fail closed
+without claiming that context compression is active.
+
 ## 8. Conflict policy
 
 - New explicit user instructions supersede older conversational memory.
