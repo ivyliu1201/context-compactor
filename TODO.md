@@ -52,7 +52,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Add an executable hook runtime that connects Codex and Claude hook input
       to privacy filtering, validated journal operations, foreground context,
       and durable background refresh handoff.
-- [ ] Add install, uninstall, status, and doctor commands.
+- [x] Add install, uninstall, status, and doctor commands.
 
 ## 5. Benchmark suite
 

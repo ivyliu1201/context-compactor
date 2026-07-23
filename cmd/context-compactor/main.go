@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 
 	"context-compactor/internal/compiler"
 	"context-compactor/internal/journal"
+	"context-compactor/internal/management"
 	"context-compactor/internal/protocol"
 	compactruntime "context-compactor/internal/runtime"
 )
@@ -22,6 +24,11 @@ var defaultLimits = compiler.BudgetLimits{
 	Trigger: 12 * 1024,
 	Hard:    16 * 1024,
 }
+
+var (
+	currentExecutable = os.Executable
+	managementProbe   = management.ProbeExecutable
+)
 
 func main() {
 	if err := run(
@@ -53,6 +60,17 @@ func run(
 		return runHook(ctx, args[1:], input, output, diagnostics, now)
 	case "refresh-worker":
 		return runRefreshWorker(ctx, args[1:], diagnostics, now)
+	case "install", "uninstall", "status", "doctor":
+		return runManagement(
+			ctx,
+			args[0],
+			args[1:],
+			output,
+			diagnostics,
+			now,
+		)
+	case "self-check":
+		return runSelfCheck(args[1:], output)
 	default:
 		return fmt.Errorf("unsupported command %q", args[0])
 	}
@@ -160,6 +178,96 @@ func runRefreshWorker(
 	return nil
 }
 
+func runManagement(
+	ctx context.Context,
+	action string,
+	args []string,
+	output io.Writer,
+	diagnostics io.Writer,
+	now func() time.Time,
+) error {
+	flags := flag.NewFlagSet(action, flag.ContinueOnError)
+	flags.SetOutput(diagnostics)
+	projectRoot := flags.String("project-root", "", "repository root")
+	hostName := flags.String("host", "all", "managed host: codex, claude, or all")
+	executable := flags.String(
+		"executable",
+		"",
+		"installed executable path; install only",
+	)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("%s does not accept positional arguments", action)
+	}
+	if strings.TrimSpace(*projectRoot) == "" {
+		return fmt.Errorf("%s project root is required", action)
+	}
+	hosts, err := parseManagementHosts(*hostName)
+	if err != nil {
+		return err
+	}
+	if action != "install" && strings.TrimSpace(*executable) != "" {
+		return fmt.Errorf("--executable is only supported by install")
+	}
+	if now == nil {
+		return fmt.Errorf("management clock is required")
+	}
+	executablePath := strings.TrimSpace(*executable)
+	if action == "install" && executablePath == "" {
+		executablePath, err = currentExecutable()
+		if err != nil {
+			return fmt.Errorf("resolve current executable: %w", err)
+		}
+	}
+	manager := management.Manager{
+		ProjectRoot: *projectRoot,
+		Executable:  executablePath,
+		Now:         now,
+		Probe:       managementProbe,
+	}
+
+	var reports []management.Report
+	switch action {
+	case "install":
+		reports, err = manager.Install(ctx, hosts)
+	case "uninstall":
+		reports, err = manager.Uninstall(ctx, hosts)
+	case "status":
+		reports, err = manager.Status(ctx, hosts)
+	case "doctor":
+		reports, err = manager.Doctor(ctx, hosts)
+	default:
+		return fmt.Errorf("unsupported management command %q", action)
+	}
+	if len(reports) > 0 {
+		if encodeErr := json.NewEncoder(output).Encode(struct {
+			Command string              `json:"command"`
+			Reports []management.Report `json:"reports"`
+		}{
+			Command: action,
+			Reports: reports,
+		}); encodeErr != nil {
+			return fmt.Errorf("encode %s report: %w", action, encodeErr)
+		}
+	}
+	return err
+}
+
+func runSelfCheck(args []string, output io.Writer) error {
+	if len(args) != 0 {
+		return fmt.Errorf("self-check does not accept arguments")
+	}
+	if _, err := io.WriteString(
+		output,
+		"{\"protocol\":\"context-compactor/v1\",\"status\":\"ok\"}\n",
+	); err != nil {
+		return fmt.Errorf("write self-check response: %w", err)
+	}
+	return nil
+}
+
 func bindBudgetFlags(flags *flag.FlagSet) *compiler.BudgetLimits {
 	limits := defaultLimits
 	flags.IntVar(&limits.Target, "target-budget", limits.Target, "target rendered-byte budget")
@@ -186,5 +294,18 @@ func parsePrivacyMode(value string) (protocol.PrivacyMode, error) {
 		return mode, nil
 	default:
 		return "", fmt.Errorf("unsupported privacy mode %q", value)
+	}
+}
+
+func parseManagementHosts(value string) ([]management.Host, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "all":
+		return []management.Host{management.HostCodex, management.HostClaude}, nil
+	case "codex", "codex-cli":
+		return []management.Host{management.HostCodex}, nil
+	case "claude", "claude-code":
+		return []management.Host{management.HostClaude}, nil
+	default:
+		return nil, fmt.Errorf("management host must be codex, claude, or all")
 	}
 }

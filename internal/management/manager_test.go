@@ -1,0 +1,338 @@
+package management
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestManagerInstallDoctorStatusAndUninstallPreserveOtherHooks(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	executable := testExecutable(t, root)
+	writeTestJSON(t, filepath.Join(root, ".codex", "hooks.json"), map[string]any{
+		"description": "keep this",
+		"hooks": map[string]any{
+			"UserPromptSubmit": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": "other-tool",
+						},
+					},
+				},
+			},
+		},
+	})
+	codexPath := filepath.Join(root, ".codex", "hooks.json")
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(codexPath, 0o640); err != nil {
+			t.Fatalf("Chmod() error = %v", err)
+		}
+	}
+	writeTestJSON(t, filepath.Join(root, ".claude", "settings.local.json"), map[string]any{
+		"permissions": map[string]any{"allow": []any{"Read"}},
+	})
+	manager := testManager(root, executable, func(context.Context, string) error {
+		return nil
+	})
+
+	reports, err := manager.Install(ctx, []Host{HostCodex, HostClaude})
+	if err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	assertReport(t, reports, HostClaude, "definition_ready", true, true)
+	assertReport(t, reports, HostCodex, "awaiting_manual_trust", true, true)
+
+	status, err := manager.Status(ctx, []Host{HostClaude, HostCodex})
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	assertReport(t, status, HostClaude, "definition_ready", true, false)
+	assertReport(t, status, HostCodex, "awaiting_manual_trust", true, false)
+
+	codex := readTestJSON(t, filepath.Join(root, ".codex", "hooks.json"))
+	if codex["description"] != "keep this" {
+		t.Fatalf("Codex description = %v", codex["description"])
+	}
+	if countCommand(t, codex, "UserPromptSubmit", "other-tool") != 1 {
+		t.Fatal("install removed unrelated Codex hook")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(codexPath)
+		if err != nil {
+			t.Fatalf("Stat() error = %v", err)
+		}
+		if info.Mode().Perm() != 0o640 {
+			t.Fatalf("Codex config mode = %o, want 640", info.Mode().Perm())
+		}
+	}
+	claude := readTestJSON(t, filepath.Join(root, ".claude", "settings.local.json"))
+	if _, found := claude["permissions"]; !found {
+		t.Fatal("install removed unrelated Claude settings")
+	}
+
+	uninstalled, err := manager.Uninstall(ctx, []Host{HostCodex, HostClaude})
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	assertReport(t, uninstalled, HostClaude, "not_installed", false, false)
+	assertReport(t, uninstalled, HostCodex, "not_installed", false, false)
+	codex = readTestJSON(t, filepath.Join(root, ".codex", "hooks.json"))
+	if codex["description"] != "keep this" ||
+		countCommand(t, codex, "UserPromptSubmit", "other-tool") != 1 {
+		t.Fatalf("Codex config after uninstall = %+v", codex)
+	}
+	claude = readTestJSON(t, filepath.Join(root, ".claude", "settings.local.json"))
+	if _, found := claude["permissions"]; !found {
+		t.Fatal("uninstall removed unrelated Claude settings")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".context-compactor", "install.json")); !errors.Is(
+		err,
+		os.ErrNotExist,
+	) {
+		t.Fatalf("install manifest remains after uninstall: %v", err)
+	}
+}
+
+func TestManagerRemovesOnlyConfigurationFilesItCreated(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	executable := testExecutable(t, root)
+	manager := testManager(root, executable, func(context.Context, string) error {
+		return nil
+	})
+	hosts := []Host{HostCodex, HostClaude}
+	if _, err := manager.Install(ctx, hosts); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if _, err := manager.Install(ctx, hosts); err != nil {
+		t.Fatalf("reinstall error = %v", err)
+	}
+	if _, err := manager.Uninstall(ctx, hosts); err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	for _, host := range hosts {
+		if _, err := os.Stat(hostConfigPath(root, host)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s config still exists: %v", host, err)
+		}
+	}
+}
+
+func TestManagerRollsBackWhenClaudeHooksAreDisabled(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	executable := testExecutable(t, root)
+	path := filepath.Join(root, ".claude", "settings.local.json")
+	original := map[string]any{
+		"disableAllHooks": true,
+		"permissions":     map[string]any{"allow": []any{"Read"}},
+	}
+	writeTestJSON(t, path, original)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	manager := testManager(root, executable, func(context.Context, string) error {
+		return nil
+	})
+
+	if _, err := manager.Install(ctx, []Host{HostClaude}); err == nil ||
+		!strings.Contains(err.Error(), "installation doctor failed") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() after rollback error = %v", err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("Claude settings after rollback = %q, want %q", after, before)
+	}
+}
+
+func TestManagerRefusesAmbiguousUninstall(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	executable := testExecutable(t, root)
+	manager := testManager(root, executable, func(context.Context, string) error {
+		return nil
+	})
+	if _, err := manager.Install(ctx, []Host{HostClaude}); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	path := hostConfigPath(root, HostClaude)
+	document := readTestJSON(t, path)
+	hooks := document["hooks"].(map[string]any)
+	groups := hooks["SessionStart"].([]any)
+	group := groups[0].(map[string]any)
+	handlers := group["hooks"].([]any)
+	handlers[0].(map[string]any)["command"] = "user-modified-command"
+	writeTestJSON(t, path, document)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read modified config: %v", err)
+	}
+
+	if _, err := manager.Uninstall(ctx, []Host{HostClaude}); err == nil ||
+		!strings.Contains(err.Error(), "refusing ambiguous uninstall") {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config after refused uninstall: %v", err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("refused uninstall changed host configuration")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".context-compactor", "install.json")); err != nil {
+		t.Fatalf("refused uninstall removed manifest: %v", err)
+	}
+}
+
+func TestManagerRollsBackWhenPostInstallDoctorFails(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	executable := testExecutable(t, root)
+	path := filepath.Join(root, ".codex", "hooks.json")
+	original := []byte("{\n  \"description\": \"original\"\n}\n")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	probeCalls := 0
+	manager := testManager(root, executable, func(context.Context, string) error {
+		probeCalls++
+		if probeCalls == 1 {
+			return nil
+		}
+		return errors.New("unhealthy")
+	})
+
+	if _, err := manager.Install(ctx, []Host{HostCodex}); err == nil ||
+		!strings.Contains(err.Error(), "installation doctor failed") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	restored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if !reflect.DeepEqual(restored, original) {
+		t.Fatalf("restored config = %q, want original", restored)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".context-compactor", "install.json")); !errors.Is(
+		err,
+		os.ErrNotExist,
+	) {
+		t.Fatalf("manifest after rollback: %v", err)
+	}
+}
+
+func testManager(root, executable string, probe ProbeFunc) Manager {
+	return Manager{
+		ProjectRoot: root,
+		Executable:  executable,
+		Now: func() time.Time {
+			return time.Date(2026, 7, 23, 9, 0, 0, 0, time.UTC)
+		},
+		Probe: probe,
+	}
+}
+
+func testExecutable(t *testing.T, root string) string {
+	t.Helper()
+	path := filepath.Join(root, "context-compactor-test")
+	if err := os.WriteFile(path, []byte("test executable"), 0o700); err != nil {
+		t.Fatalf("WriteFile() executable error = %v", err)
+	}
+	return path
+}
+
+func writeTestJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatalf("json.MarshalIndent() error = %v", err)
+	}
+	encoded = append(encoded, '\n')
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func readTestJSON(t *testing.T, path string) map[string]any {
+	t.Helper()
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	return document
+}
+
+func countCommand(
+	t *testing.T,
+	document map[string]any,
+	event string,
+	command string,
+) int {
+	t.Helper()
+	hooks, ok := document["hooks"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	groups, ok := hooks[event].([]any)
+	if !ok {
+		return 0
+	}
+	count := 0
+	for _, rawGroup := range groups {
+		group := rawGroup.(map[string]any)
+		handlers := group["hooks"].([]any)
+		for _, rawHandler := range handlers {
+			handler := rawHandler.(map[string]any)
+			if handler["command"] == command {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func assertReport(
+	t *testing.T,
+	reports []Report,
+	host Host,
+	state string,
+	definitionHealthy bool,
+	executableHealthy bool,
+) {
+	t.Helper()
+	for _, report := range reports {
+		if report.Host != host {
+			continue
+		}
+		if report.State != state ||
+			report.DefinitionHealthy != definitionHealthy ||
+			report.ExecutableHealthy != executableHealthy {
+			t.Fatalf("report = %+v", report)
+		}
+		return
+	}
+	t.Fatalf("missing %s report in %+v", host, reports)
+}

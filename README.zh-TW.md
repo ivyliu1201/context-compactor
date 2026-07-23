@@ -7,7 +7,7 @@
 
 > 狀態：已完成 protocol、本機 SQLite journal、deterministic reducer/compiler、
 > Codex／Claude hook runtime 與 durable capsule refresh handoff；
-> 目前尚無已發布的 binary 或穩定安裝 CLI。
+> 已可從原始碼管理專案本地安裝，但目前尚無已發布的 binary。
 
 ## 設計目標
 
@@ -46,13 +46,24 @@ go vet ./...
 
 ```sh
 go build -o context-compactor ./cmd/context-compactor
-context-compactor hook --host codex --project-root /path/to/repository
-context-compactor hook --host claude --project-root /path/to/repository
+context-compactor install --host all --project-root /path/to/repository
+context-compactor status --host all --project-root /path/to/repository
+context-compactor doctor --host all --project-root /path/to/repository
 context-compactor refresh-worker --project-root /path/to/repository
+context-compactor uninstall --host all --project-root /path/to/repository
 ```
 
 Hook 只從標準輸入讀取一個 host payload，標準輸出只用來回傳 host JSON。Install
-指令完成前，host hook definition 與 refresh-worker 排程仍需手動設定。
+只會將 context-compactor 的五種 lifecycle hooks 合併進專案本地設定，並把精確
+command 記錄在已被 gitignore 的 `.context-compactor/install.json`。Uninstall
+只移除完全相符的受管理項目；若使用者曾修改該 hook，會停止而不猜測刪除。
+
+Codex definition 會寫入 `.codex/hooks.json`。Codex 要求使用者透過 `/hooks`
+審查並信任新增或變更的專案 hooks，因此 status 只會回報
+`awaiting_manual_trust`，不會宣稱壓縮已啟用。Claude definition 會寫入
+`.claude/settings.local.json`。Doctor 會實際執行安裝 binary 的 bounded
+self-check，並驗證每一個受管理 definition；無法讀取的 host trust 或企業政策會
+保留為 activation unknown。Refresh-worker 排程目前仍需手動設定。
 
 一般 prompt 文字維持 transient。內建 deterministic extractor 只保存明確指令，例如：
 

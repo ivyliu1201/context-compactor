@@ -8,7 +8,8 @@ implementation state without persisting complete prompts by default.
 
 > Status: the protocol, local SQLite journal, deterministic reducer/compiler,
 > Codex and Claude hook runtime, and durable capsule-refresh handoff are
-> implemented. There is no published binary or stable installation CLI yet.
+> implemented. Project-local install management is available from source, but
+> there is no published binary yet.
 
 ## Design goals
 
@@ -54,15 +55,27 @@ Build and invoke the source-stage executable:
 
 ```sh
 go build -o context-compactor ./cmd/context-compactor
-context-compactor hook --host codex --project-root /path/to/repository
-context-compactor hook --host claude --project-root /path/to/repository
+context-compactor install --host all --project-root /path/to/repository
+context-compactor status --host all --project-root /path/to/repository
+context-compactor doctor --host all --project-root /path/to/repository
 context-compactor refresh-worker --project-root /path/to/repository
+context-compactor uninstall --host all --project-root /path/to/repository
 ```
 
 The hook reads exactly one host payload from standard input and reserves
-standard output for the host JSON response. Until install commands are added,
-the host hook definition and refresh-worker scheduling must be configured
-manually.
+standard output for the host JSON response. Installation merges only the five
+context-compactor lifecycle hooks into project-local configuration and records
+their exact commands in the ignored `.context-compactor/install.json` file.
+Uninstall removes only exact managed entries and refuses ambiguous, user-edited
+definitions.
+
+Codex definitions are written to `.codex/hooks.json`. Codex requires reviewing
+and trusting new or changed project hooks through `/hooks`, so status reports
+`awaiting_manual_trust` instead of claiming that compression is active. Claude
+definitions are written to `.claude/settings.local.json`. Doctor executes the
+installed binary's bounded self-check and verifies every managed definition;
+host activation remains unknown when external trust or enterprise policy
+cannot be inspected. Refresh-worker scheduling is still configured manually.
 
 Ordinary prompt text remains transient. The built-in deterministic extractor
 persists only explicit directives such as:

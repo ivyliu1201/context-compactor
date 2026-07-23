@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"context-compactor/internal/journal"
+	"context-compactor/internal/management"
 )
 
 func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.T) {
@@ -131,4 +133,114 @@ func TestExecutableHookRejectsUnknownHostWithoutWritingStdout(t *testing.T) {
 	if output.Len() != 0 {
 		t.Fatalf("stdout = %q, want untouched", output.String())
 	}
+}
+
+func TestManagementCommandsInstallDoctorStatusAndUninstall(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "context-compactor-test")
+	if err := os.WriteFile(executable, []byte("test executable"), 0o700); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	originalProbe := managementProbe
+	managementProbe = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { managementProbe = originalProbe })
+	now := func() time.Time {
+		return time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)
+	}
+
+	install := runManagementCommand(t, now, []string{
+		"install",
+		"--host",
+		"all",
+		"--project-root",
+		root,
+		"--executable",
+		executable,
+	})
+	if install.Command != "install" || len(install.Reports) != 2 {
+		t.Fatalf("install output = %+v", install)
+	}
+	status := runManagementCommand(t, now, []string{
+		"status",
+		"--host",
+		"all",
+		"--project-root",
+		root,
+	})
+	if status.Command != "status" || len(status.Reports) != 2 {
+		t.Fatalf("status output = %+v", status)
+	}
+	doctor := runManagementCommand(t, now, []string{
+		"doctor",
+		"--host",
+		"all",
+		"--project-root",
+		root,
+	})
+	for _, report := range doctor.Reports {
+		if !report.DefinitionHealthy || !report.ExecutableHealthy {
+			t.Fatalf("doctor report = %+v", report)
+		}
+	}
+	uninstall := runManagementCommand(t, now, []string{
+		"uninstall",
+		"--host",
+		"all",
+		"--project-root",
+		root,
+	})
+	if uninstall.Command != "uninstall" || len(uninstall.Reports) != 2 {
+		t.Fatalf("uninstall output = %+v", uninstall)
+	}
+}
+
+func TestSelfCheckUsesExactBoundedDocument(t *testing.T) {
+	var output bytes.Buffer
+	if err := run(
+		context.Background(),
+		[]string{"self-check"},
+		bytes.NewReader(nil),
+		&output,
+		&bytes.Buffer{},
+		func() time.Time { return time.Now().UTC() },
+	); err != nil {
+		t.Fatalf("run(self-check) error = %v", err)
+	}
+	if output.String() != "{\"protocol\":\"context-compactor/v1\",\"status\":\"ok\"}\n" {
+		t.Fatalf("self-check output = %q", output.String())
+	}
+}
+
+type managementCommandOutput struct {
+	Command string              `json:"command"`
+	Reports []management.Report `json:"reports"`
+}
+
+func runManagementCommand(
+	t *testing.T,
+	now func() time.Time,
+	args []string,
+) managementCommandOutput {
+	t.Helper()
+	var output, diagnostics bytes.Buffer
+	if err := run(
+		context.Background(),
+		args,
+		bytes.NewReader(nil),
+		&output,
+		&diagnostics,
+		now,
+	); err != nil {
+		t.Fatalf(
+			"run(%s) error = %v, diagnostics = %q",
+			args[0],
+			err,
+			diagnostics.String(),
+		)
+	}
+	var decoded managementCommandOutput
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode %s output: %v", args[0], err)
+	}
+	return decoded
 }
