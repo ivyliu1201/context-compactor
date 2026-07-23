@@ -176,6 +176,75 @@ INSERT INTO memory_operations (
 	}
 }
 
+func TestLoadOperationsAfterReturnsOrderedDurableDelta(t *testing.T) {
+	store, root := openTestStore(t)
+	for sequence := 1; sequence <= 3; sequence++ {
+		appendReducerOperation(t, store, root, sequence, protocol.Operation{
+			ID:   fmt.Sprintf("operation-%d", sequence),
+			Kind: protocol.OperationAdd,
+			Record: reducerTestRecord(
+				fmt.Sprintf("task-%d", sequence),
+				fmt.Sprintf("task.%d", sequence),
+				fmt.Sprintf("Task %d", sequence),
+				protocol.MemoryTask,
+				protocol.PriorityNormal,
+			),
+		})
+	}
+
+	all, err := store.LoadOperationsAfter(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("LoadOperationsAfter(0) error = %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("LoadOperationsAfter(0) returned %d operations, want 3", len(all))
+	}
+	for index, envelope := range all {
+		wantSequence := int64(index + 1)
+		if envelope.OperationSeq != wantSequence || envelope.EventSeq != wantSequence {
+			t.Fatalf(
+				"operation[%d] sequences = operation %d event %d, want %d",
+				index,
+				envelope.OperationSeq,
+				envelope.EventSeq,
+				wantSequence,
+			)
+		}
+	}
+
+	delta, err := store.LoadOperationsAfter(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("LoadOperationsAfter(1) error = %v", err)
+	}
+	if len(delta) != 2 ||
+		delta[0].OperationSeq != 2 ||
+		delta[1].OperationSeq != 3 {
+		t.Fatalf("LoadOperationsAfter(1) = %+v, want sequences 2 and 3", delta)
+	}
+	if delta[0].Operation.Record == nil ||
+		delta[0].Operation.Record.ID != "task-2" ||
+		delta[0].SourceEventID != "event-2" {
+		t.Fatalf("first delta operation = %+v, want decoded task-2", delta[0])
+	}
+
+	empty, err := store.LoadOperationsAfter(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("LoadOperationsAfter(3) error = %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("LoadOperationsAfter(3) = %+v, want empty", empty)
+	}
+}
+
+func TestLoadOperationsAfterRejectsNegativeCursor(t *testing.T) {
+	store, _ := openTestStore(t)
+
+	_, err := store.LoadOperationsAfter(context.Background(), -1)
+	if err == nil || !strings.Contains(err.Error(), "must not be negative") {
+		t.Fatalf("LoadOperationsAfter(-1) error = %v", err)
+	}
+}
+
 func appendReducerOperation(
 	t *testing.T,
 	store *Store,

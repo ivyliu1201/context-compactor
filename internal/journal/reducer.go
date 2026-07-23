@@ -108,14 +108,51 @@ WHERE singleton = 1`).Scan(
 	return snapshot, true, nil
 }
 
+// LoadOperationsAfter returns durable operations following the supplied
+// operation cursor in ascending sequence order.
+func (store *Store) LoadOperationsAfter(
+	ctx context.Context,
+	operationSeq int64,
+) ([]reducer.OperationEnvelope, error) {
+	if operationSeq < 0 {
+		return nil, fmt.Errorf("operation sequence cursor must not be negative")
+	}
+
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin operation read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	operations, err := readReductionOperationsAfter(ctx, tx, operationSeq)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit operation read: %w", err)
+	}
+	return operations, nil
+}
+
 func readReductionOperations(ctx context.Context, tx *sql.Tx) ([]reducer.OperationEnvelope, error) {
+	return readReductionOperationsAfter(ctx, tx, 0)
+}
+
+func readReductionOperationsAfter(
+	ctx context.Context,
+	tx *sql.Tx,
+	operationSeq int64,
+) ([]reducer.OperationEnvelope, error) {
 	rows, err := tx.QueryContext(ctx, `
 SELECT operation.seq, event.seq, operation.source_event_id,
        operation.privacy_mode, operation.created_at, operation.operation_id,
        operation.kind, operation.target_id, operation.record_json
 FROM memory_operations AS operation
 JOIN events AS event ON event.event_id = operation.source_event_id
-ORDER BY operation.seq`)
+WHERE operation.seq > ?
+ORDER BY operation.seq`,
+		operationSeq,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("read reduction operations: %w", err)
 	}
