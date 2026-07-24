@@ -10,6 +10,16 @@ func NewContinuousDevelopmentScenario(seed uint64) Fixture {
 	return newFixture(ScenarioContinuousDevelopment, seed, continuousDevelopmentTurn)
 }
 
+// NewContinuousDevelopmentEnduranceScenario extends the same deterministic
+// flow to 120 turns with endurance checkpoints.
+func NewContinuousDevelopmentEnduranceScenario(seed uint64) Fixture {
+	return newEnduranceFixture(
+		ScenarioContinuousDevelopment,
+		seed,
+		continuousDevelopmentTurn,
+	)
+}
+
 // NewRequirementReversalScenario replaces the initial decision on turn 31.
 // The replacement takes effect in that turn; checkpoints only observe the
 // before and after states.
@@ -17,10 +27,26 @@ func NewRequirementReversalScenario(seed uint64) Fixture {
 	return newFixture(ScenarioRequirementReversal, seed, requirementReversalTurn)
 }
 
+// NewRequirementReversalEnduranceScenario extends the same deterministic flow
+// to 120 turns with endurance checkpoints.
+func NewRequirementReversalEnduranceScenario(seed uint64) Fixture {
+	return newEnduranceFixture(
+		ScenarioRequirementReversal,
+		seed,
+		requirementReversalTurn,
+	)
+}
+
 // NewResumeScenario places a saved checkpoint before a new-session boundary,
 // then models preview, confirmation, and continued implementation.
 func NewResumeScenario(seed uint64) Fixture {
 	return newFixture(ScenarioResume, seed, resumeTurn)
+}
+
+// NewResumeEnduranceScenario extends the same deterministic flow to 120 turns
+// with endurance checkpoints.
+func NewResumeEnduranceScenario(seed uint64) Fixture {
+	return newEnduranceFixture(ScenarioResume, seed, resumeTurn)
 }
 
 func continuousDevelopmentTurn(seed uint64, number int) Turn {

@@ -4,9 +4,15 @@ package benchmark
 
 import "fmt"
 
-const TotalTurns = 60
+const (
+	TotalTurns     = 60
+	EnduranceTurns = 120
+)
 
-var checkpointTurns = [...]int{10, 30, 50, 60}
+var (
+	checkpointTurns          = [...]int{10, 30, 50, 60}
+	enduranceCheckpointTurns = [...]int{60, 90, 120}
+)
 
 // ScenarioKind identifies which synthetic benchmark flow produced a fixture.
 type ScenarioKind string
@@ -47,8 +53,8 @@ type Checkpoint struct {
 	Turns      []Turn `json:"turns"`
 }
 
-// Fixture contains one deterministic 60-turn synthetic run and its required
-// evaluation checkpoints.
+// Fixture contains one deterministic synthetic run and its required evaluation
+// checkpoints.
 type Fixture struct {
 	Scenario    ScenarioKind `json:"scenario"`
 	Seed        uint64       `json:"seed"`
@@ -68,14 +74,44 @@ func newFixture(
 	seed uint64,
 	buildTurn func(uint64, int) Turn,
 ) Fixture {
-	turns := make([]Turn, TotalTurns)
+	return newFixtureWithSchedule(
+		scenario,
+		seed,
+		TotalTurns,
+		checkpointTurns[:],
+		buildTurn,
+	)
+}
+
+func newEnduranceFixture(
+	scenario ScenarioKind,
+	seed uint64,
+	buildTurn func(uint64, int) Turn,
+) Fixture {
+	return newFixtureWithSchedule(
+		scenario,
+		seed,
+		EnduranceTurns,
+		enduranceCheckpointTurns[:],
+		buildTurn,
+	)
+}
+
+func newFixtureWithSchedule(
+	scenario ScenarioKind,
+	seed uint64,
+	totalTurns int,
+	checkpointsAt []int,
+	buildTurn func(uint64, int) Turn,
+) Fixture {
+	turns := make([]Turn, totalTurns)
 	for index := range turns {
 		number := index + 1
 		turns[index] = buildTurn(seed, number)
 	}
 
-	checkpoints := make([]Checkpoint, len(checkpointTurns))
-	for index, turnNumber := range checkpointTurns {
+	checkpoints := make([]Checkpoint, len(checkpointsAt))
+	for index, turnNumber := range checkpointsAt {
 		checkpoints[index] = Checkpoint{
 			TurnNumber: turnNumber,
 			Turns:      cloneTurns(turns[:turnNumber]),

@@ -1,7 +1,9 @@
 package benchmark
 
 import (
+	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -55,6 +57,94 @@ func TestScenariosAreDeterministic60TurnFixtures(t *testing.T) {
 				if !reflect.DeepEqual(checkpoint.Turns, first.Turns[:wantTurn]) {
 					t.Fatalf("Checkpoints[%d] does not match fixture prefix", index)
 				}
+			}
+		})
+	}
+}
+
+func TestEnduranceScenariosPreserveFormalFixturePrefix(t *testing.T) {
+	tests := []struct {
+		name           string
+		scenario       ScenarioKind
+		buildFormal    func(uint64) Fixture
+		buildEndurance func(uint64) Fixture
+	}{
+		{
+			name:           "continuous development",
+			scenario:       ScenarioContinuousDevelopment,
+			buildFormal:    NewContinuousDevelopmentScenario,
+			buildEndurance: NewContinuousDevelopmentEnduranceScenario,
+		},
+		{
+			name:           "requirement reversal",
+			scenario:       ScenarioRequirementReversal,
+			buildFormal:    NewRequirementReversalScenario,
+			buildEndurance: NewRequirementReversalEnduranceScenario,
+		},
+		{
+			name:           "resume",
+			scenario:       ScenarioResume,
+			buildFormal:    NewResumeScenario,
+			buildEndurance: NewResumeEnduranceScenario,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for seed := uint64(1); seed <= 5; seed++ {
+				t.Run("seed "+strconv.FormatUint(seed, 10), func(t *testing.T) {
+					formal := test.buildFormal(seed)
+					endurance := test.buildEndurance(seed)
+
+					if endurance.Scenario != test.scenario {
+						t.Fatalf(
+							"Scenario = %q, want %q",
+							endurance.Scenario,
+							test.scenario,
+						)
+					}
+					if len(endurance.Turns) != EnduranceTurns {
+						t.Fatalf(
+							"len(Turns) = %d, want %d",
+							len(endurance.Turns),
+							EnduranceTurns,
+						)
+					}
+					assertJSONEqual(
+						t,
+						formal.Turns,
+						endurance.Turns[:TotalTurns],
+						"formal and endurance turn prefixes differ",
+					)
+
+					if len(endurance.Checkpoints) != len(enduranceCheckpointTurns) {
+						t.Fatalf(
+							"len(Checkpoints) = %d, want %d",
+							len(endurance.Checkpoints),
+							len(enduranceCheckpointTurns),
+						)
+					}
+					for index, checkpoint := range endurance.Checkpoints {
+						wantTurn := enduranceCheckpointTurns[index]
+						if checkpoint.TurnNumber != wantTurn {
+							t.Fatalf(
+								"Checkpoints[%d].TurnNumber = %d, want %d",
+								index,
+								checkpoint.TurnNumber,
+								wantTurn,
+							)
+						}
+						if !reflect.DeepEqual(
+							checkpoint.Turns,
+							endurance.Turns[:wantTurn],
+						) {
+							t.Fatalf(
+								"Checkpoints[%d] does not match fixture prefix",
+								index,
+							)
+						}
+					}
+				})
 			}
 		})
 	}
@@ -168,4 +258,20 @@ func containsActivity(turn Turn, prefix string) bool {
 		}
 	}
 	return false
+}
+
+func assertJSONEqual(t *testing.T, left, right any, message string) {
+	t.Helper()
+
+	leftJSON, err := json.Marshal(left)
+	if err != nil {
+		t.Fatalf("json.Marshal(left) error = %v", err)
+	}
+	rightJSON, err := json.Marshal(right)
+	if err != nil {
+		t.Fatalf("json.Marshal(right) error = %v", err)
+	}
+	if string(leftJSON) != string(rightJSON) {
+		t.Fatal(message)
+	}
 }
