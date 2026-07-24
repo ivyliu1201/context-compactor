@@ -22,11 +22,89 @@ type PruneResult struct {
 	CheckpointsDeleted int64
 }
 
+// JournalStateSnapshot is a consistent, read-only view of durable sequence and
+// consumer cursor state. LastEventSeq includes progress retained by consumers
+// after unreferenced events are pruned. The retention boundary is the slowest
+// consumer cursor and is absent when no consumers have recorded progress.
+type JournalStateSnapshot struct {
+	LastEventSeq              int64
+	LastOperationSeq          int64
+	ConsumerCursors           map[string]int64
+	RetentionBoundaryEventSeq int64
+	HasRetentionBoundary      bool
+}
+
 func DefaultRetentionPolicy() RetentionPolicy {
 	return RetentionPolicy{
 		MaxUnreferencedEvents: DefaultMaxUnreferencedEvents,
 		MaxResumeCheckpoints:  DefaultMaxResumeCheckpoints,
 	}
+}
+
+func (store *Store) LoadJournalStateSnapshot(
+	ctx context.Context,
+) (JournalStateSnapshot, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return JournalStateSnapshot{}, fmt.Errorf("begin journal state read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	snapshot := JournalStateSnapshot{
+		ConsumerCursors: make(map[string]int64),
+	}
+	var lastEventSeq, lastOperationSeq sql.NullInt64
+	if err := tx.QueryRowContext(ctx, "SELECT MAX(seq) FROM events").Scan(
+		&lastEventSeq,
+	); err != nil {
+		return JournalStateSnapshot{}, fmt.Errorf("read latest event sequence: %w", err)
+	}
+	if lastEventSeq.Valid {
+		snapshot.LastEventSeq = lastEventSeq.Int64
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT MAX(seq) FROM memory_operations").Scan(
+		&lastOperationSeq,
+	); err != nil {
+		return JournalStateSnapshot{}, fmt.Errorf("read latest operation sequence: %w", err)
+	}
+	if lastOperationSeq.Valid {
+		snapshot.LastOperationSeq = lastOperationSeq.Int64
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT consumer, last_event_seq
+FROM consumer_cursors
+ORDER BY consumer`)
+	if err != nil {
+		return JournalStateSnapshot{}, fmt.Errorf("read consumer cursors: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var consumer string
+		var eventSeq int64
+		if err := rows.Scan(&consumer, &eventSeq); err != nil {
+			return JournalStateSnapshot{}, fmt.Errorf("scan consumer cursor: %w", err)
+		}
+		snapshot.ConsumerCursors[consumer] = eventSeq
+		if eventSeq > snapshot.LastEventSeq {
+			snapshot.LastEventSeq = eventSeq
+		}
+		if !snapshot.HasRetentionBoundary ||
+			eventSeq < snapshot.RetentionBoundaryEventSeq {
+			snapshot.RetentionBoundaryEventSeq = eventSeq
+			snapshot.HasRetentionBoundary = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return JournalStateSnapshot{}, fmt.Errorf("iterate consumer cursors: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return JournalStateSnapshot{}, fmt.Errorf("close consumer cursor rows: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return JournalStateSnapshot{}, fmt.Errorf("commit journal state read: %w", err)
+	}
+	return snapshot, nil
 }
 
 func (store *Store) UpdateCursor(ctx context.Context, consumer string, eventSeq int64) error {

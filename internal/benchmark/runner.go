@@ -33,8 +33,6 @@ const (
 )
 
 var deferredStateChecks = [...]DeterministicCheckName{
-	CheckJournalState,
-	CheckVersionCursorContinuity,
 	CheckBoundedRecovery,
 }
 
@@ -51,11 +49,12 @@ type CapsuleEvidenceKey struct {
 	Mode       ComparisonMode
 }
 
-// CapsuleEvidence carries the active verified capsule for one turn and an
-// optional publication result observed during that turn. It does not add
-// benchmark-only fields to the production capsule schema.
+// CapsuleEvidence carries the active verified capsule, durable journal state,
+// and an optional publication result observed during one turn. It does not add
+// benchmark-only fields to production evidence schemas.
 type CapsuleEvidence struct {
 	Capsule     *compiler.VerifiedCapsule
+	Journal     *journal.JournalStateSnapshot
 	Publication *journal.CapsulePublishResult
 }
 
@@ -94,6 +93,7 @@ func RunDeterministicChecksWithCapsuleEvidence(
 
 	counter := compiler.RenderCounterProfile()
 	previousCapsules := make(map[ComparisonMode]compiler.VerifiedCapsule)
+	previousJournals := make(map[ComparisonMode]journal.JournalStateSnapshot)
 	results := make(
 		[]TurnCheckResult,
 		0,
@@ -124,6 +124,14 @@ func RunDeterministicChecksWithCapsuleEvidence(
 				turnEvidence,
 				evidenceProvided,
 			)
+			previousJournal, hasPreviousJournal := previousJournals[mode]
+			journalCheck, cursorCheck, journalValid := checkJournalEvidence(
+				mode,
+				turnEvidence,
+				evidenceProvided,
+				previousJournal,
+				hasPreviousJournal,
+			)
 			rendered, err := renderModeInput(fixture, prefix, mode)
 			if err != nil {
 				return nil, fmt.Errorf(
@@ -141,10 +149,15 @@ func RunDeterministicChecksWithCapsuleEvidence(
 				rendered,
 				counter,
 				capsuleCheck,
+				journalCheck,
+				cursorCheck,
 				publicationCheck,
 			))
 			if capsuleValid {
 				previousCapsules[mode] = *turnEvidence.Capsule
+			}
+			if journalValid {
+				previousJournals[mode] = *turnEvidence.Journal
 			}
 		}
 	}
@@ -202,6 +215,8 @@ func evaluateTurn(
 	rendered string,
 	counter compiler.CounterProfile,
 	capsuleCheck DeterministicCheck,
+	journalCheck DeterministicCheck,
+	cursorCheck DeterministicCheck,
 	publicationCheck DeterministicCheck,
 ) TurnCheckResult {
 	inputTokens := len([]byte(rendered))
@@ -214,6 +229,8 @@ func evaluateTurn(
 		checkActiveRequirement(fixture.Scenario, turnNumber, mode, rendered),
 		checkCurrentFocus(turn, rendered),
 		capsuleCheck,
+		journalCheck,
+		cursorCheck,
 		publicationCheck,
 	}
 	for _, name := range deferredStateChecks {
@@ -302,6 +319,150 @@ func failedCapsuleCheck(detail string) DeterministicCheck {
 	return DeterministicCheck{
 		Name:   CheckCapsuleState,
 		Status: DeterministicFail,
+		Detail: detail,
+	}
+}
+
+func checkJournalEvidence(
+	mode ComparisonMode,
+	evidence CapsuleEvidence,
+	provided bool,
+	previous journal.JournalStateSnapshot,
+	hasPrevious bool,
+) (DeterministicCheck, DeterministicCheck, bool) {
+	if !compactorMode(mode) {
+		return unsupportedJournalCheck(
+				CheckJournalState,
+				"baseline mode does not use compactor journal state",
+			),
+			unsupportedJournalCheck(
+				CheckVersionCursorContinuity,
+				"baseline mode does not use compactor journal cursors",
+			),
+			false
+	}
+	if !provided || evidence.Journal == nil {
+		return unsupportedJournalCheck(
+				CheckJournalState,
+				"journal state evidence was not provided",
+			),
+			unsupportedJournalCheck(
+				CheckVersionCursorContinuity,
+				"journal state evidence was not provided",
+			),
+			false
+	}
+
+	current := *evidence.Journal
+	if detail := invalidJournalState(current); detail != "" {
+		return DeterministicCheck{
+				Name:   CheckJournalState,
+				Status: DeterministicFail,
+				Detail: detail,
+			},
+			unsupportedJournalCheck(
+				CheckVersionCursorContinuity,
+				"invalid journal state cannot establish cursor continuity",
+			),
+			false
+	}
+	stateCheck := DeterministicCheck{
+		Name:   CheckJournalState,
+		Status: DeterministicPass,
+	}
+	if !hasPrevious {
+		return stateCheck, DeterministicCheck{
+			Name:   CheckVersionCursorContinuity,
+			Status: DeterministicPass,
+		}, true
+	}
+	if detail := invalidJournalContinuity(previous, current); detail != "" {
+		return stateCheck, DeterministicCheck{
+			Name:   CheckVersionCursorContinuity,
+			Status: DeterministicFail,
+			Detail: detail,
+		}, false
+	}
+	return stateCheck, DeterministicCheck{
+		Name:   CheckVersionCursorContinuity,
+		Status: DeterministicPass,
+	}, true
+}
+
+func invalidJournalState(snapshot journal.JournalStateSnapshot) string {
+	switch {
+	case snapshot.LastEventSeq < 0:
+		return "journal event sequence must not be negative"
+	case snapshot.LastOperationSeq < 0:
+		return "journal operation sequence must not be negative"
+	case len(snapshot.ConsumerCursors) == 0 && snapshot.HasRetentionBoundary:
+		return "retention boundary exists without a consumer cursor"
+	case len(snapshot.ConsumerCursors) > 0 && !snapshot.HasRetentionBoundary:
+		return "retention boundary is missing for consumer cursors"
+	}
+
+	var minimumCursor int64
+	firstCursor := true
+	for consumer, cursor := range snapshot.ConsumerCursors {
+		switch {
+		case strings.TrimSpace(consumer) == "":
+			return "journal consumer name must not be empty"
+		case cursor < 0:
+			return fmt.Sprintf("consumer cursor %q must not be negative", consumer)
+		case cursor > snapshot.LastEventSeq:
+			return fmt.Sprintf(
+				"consumer cursor %q is beyond the latest journal event",
+				consumer,
+			)
+		}
+		if firstCursor || cursor < minimumCursor {
+			minimumCursor = cursor
+			firstCursor = false
+		}
+	}
+	if snapshot.HasRetentionBoundary &&
+		snapshot.RetentionBoundaryEventSeq != minimumCursor {
+		return "retention boundary does not match the slowest consumer cursor"
+	}
+	return ""
+}
+
+func invalidJournalContinuity(
+	previous journal.JournalStateSnapshot,
+	current journal.JournalStateSnapshot,
+) string {
+	switch {
+	case current.LastEventSeq < previous.LastEventSeq:
+		return "journal event cursor moved backwards"
+	case current.LastOperationSeq < previous.LastOperationSeq:
+		return "journal operation cursor moved backwards"
+	}
+	for consumer, previousCursor := range previous.ConsumerCursors {
+		currentCursor, found := current.ConsumerCursors[consumer]
+		if !found {
+			return fmt.Sprintf("consumer cursor %q disappeared", consumer)
+		}
+		if currentCursor < previousCursor {
+			return fmt.Sprintf("consumer cursor %q moved backwards", consumer)
+		}
+	}
+	if previous.HasRetentionBoundary && !current.HasRetentionBoundary {
+		return "retention boundary disappeared"
+	}
+	if previous.HasRetentionBoundary &&
+		current.RetentionBoundaryEventSeq < previous.RetentionBoundaryEventSeq {
+		return "retention boundary moved backwards"
+	}
+	return ""
+}
+
+func unsupportedJournalCheck(
+	name DeterministicCheckName,
+	detail string,
+) DeterministicCheck {
+	return DeterministicCheck{
+		Name:   name,
+		Status: DeterministicUnsupported,
 		Detail: detail,
 	}
 }

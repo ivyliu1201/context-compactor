@@ -65,6 +65,85 @@ func TestSaveCheckpointRejectsSecretAndConflictingID(t *testing.T) {
 	assertTableCount(t, store, "resume_checkpoints", 1)
 }
 
+func TestLoadJournalStateSnapshot(t *testing.T) {
+	store, root := openTestStore(t)
+	empty, err := store.LoadJournalStateSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("LoadJournalStateSnapshot() empty error = %v", err)
+	}
+	if empty.LastEventSeq != 0 ||
+		empty.LastOperationSeq != 0 ||
+		len(empty.ConsumerCursors) != 0 ||
+		empty.HasRetentionBoundary {
+		t.Fatalf("empty journal snapshot = %+v, want zero state", empty)
+	}
+
+	if _, err := store.Append(
+		context.Background(),
+		validAppendRequest(root, "event-1", "operation-1"),
+	); err != nil {
+		t.Fatalf("append operation event: %v", err)
+	}
+	appendEventOnly(
+		t,
+		store,
+		root,
+		"event-2",
+		journalTestTime.Add(time.Second),
+	)
+	if err := store.UpdateCursor(context.Background(), "compiler", 1); err != nil {
+		t.Fatalf("UpdateCursor(compiler) error = %v", err)
+	}
+	if err := store.UpdateCursor(context.Background(), "reducer", 2); err != nil {
+		t.Fatalf("UpdateCursor(reducer) error = %v", err)
+	}
+
+	snapshot, err := store.LoadJournalStateSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("LoadJournalStateSnapshot() error = %v", err)
+	}
+	if snapshot.LastEventSeq != 2 ||
+		snapshot.LastOperationSeq != 1 ||
+		len(snapshot.ConsumerCursors) != 2 ||
+		snapshot.ConsumerCursors["compiler"] != 1 ||
+		snapshot.ConsumerCursors["reducer"] != 2 ||
+		!snapshot.HasRetentionBoundary ||
+		snapshot.RetentionBoundaryEventSeq != 1 {
+		t.Fatalf("journal snapshot = %+v, want event 2 operation 1 boundary 1", snapshot)
+	}
+
+	if err := store.UpdateCursor(context.Background(), "compiler", 2); err != nil {
+		t.Fatalf("advance compiler cursor error = %v", err)
+	}
+	advanced, err := store.LoadJournalStateSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("LoadJournalStateSnapshot() advanced error = %v", err)
+	}
+	if !advanced.HasRetentionBoundary ||
+		advanced.RetentionBoundaryEventSeq != 2 {
+		t.Fatalf("advanced retention boundary = %+v, want 2", advanced)
+	}
+
+	pruned, err := store.Prune(context.Background(), RetentionPolicy{
+		MaxUnreferencedEvents: 0,
+		MaxResumeCheckpoints:  DefaultMaxResumeCheckpoints,
+	})
+	if err != nil {
+		t.Fatalf("Prune() before snapshot error = %v", err)
+	}
+	if pruned.EventsDeleted != 1 {
+		t.Fatalf("Prune() deleted %d events, want 1", pruned.EventsDeleted)
+	}
+	afterPrune, err := store.LoadJournalStateSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("LoadJournalStateSnapshot() after prune error = %v", err)
+	}
+	if afterPrune.LastEventSeq != 2 ||
+		afterPrune.RetentionBoundaryEventSeq != 2 {
+		t.Fatalf("snapshot after prune = %+v, want retained event progress 2", afterPrune)
+	}
+}
+
 func TestPruneRequiresCursorAndKeepsReferencedEvents(t *testing.T) {
 	store, root := openTestStore(t)
 	request := validAppendRequest(root, "event-1", "operation-1")

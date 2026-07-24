@@ -79,6 +79,18 @@ func TestRunDeterministicChecksSupportsFormalAndEnduranceSchedules(t *testing.T)
 						CheckBackgroundPublication,
 						DeterministicUnsupported,
 					)
+					assertCheckStatus(
+						t,
+						result,
+						CheckJournalState,
+						DeterministicUnsupported,
+					)
+					assertCheckStatus(
+						t,
+						result,
+						CheckVersionCursorContinuity,
+						DeterministicUnsupported,
+					)
 					if mode == ModeContextCompactorStrict ||
 						mode == ModeContextCompactorBalanced {
 						assertCheckStatus(t, result, CheckHardBudget, DeterministicPass)
@@ -249,6 +261,134 @@ func TestRunDeterministicChecksRejectsInvalidCapsuleEvidence(t *testing.T) {
 	}
 }
 
+func TestRunDeterministicChecksValidatesJournalEvidence(t *testing.T) {
+	fixture := NewContinuousDevelopmentScenario(8)
+	first := benchmarkJournalState(1, 1, map[string]int64{
+		"reducer": 1,
+	})
+	second := benchmarkJournalState(2, 1, map[string]int64{
+		"compiler": 1,
+		"reducer":  2,
+	})
+	third := benchmarkJournalState(3, 2, map[string]int64{
+		"compiler": 2,
+		"reducer":  3,
+	})
+	evidence := map[CapsuleEvidenceKey]CapsuleEvidence{
+		{TurnNumber: 1, Mode: ModeContextCompactorStrict}: {
+			Journal: &first,
+		},
+		{TurnNumber: 2, Mode: ModeContextCompactorStrict}: {
+			Journal: &second,
+		},
+		{TurnNumber: 3, Mode: ModeContextCompactorStrict}: {
+			Journal: &third,
+		},
+	}
+
+	results, err := RunDeterministicChecksWithCapsuleEvidence(fixture, evidence)
+	if err != nil {
+		t.Fatalf("RunDeterministicChecksWithCapsuleEvidence() error = %v", err)
+	}
+	for turnNumber := 1; turnNumber <= 3; turnNumber++ {
+		result := findTurnCheckResult(
+			t,
+			results,
+			turnNumber,
+			ModeContextCompactorStrict,
+		)
+		assertCheckStatus(t, result, CheckJournalState, DeterministicPass)
+		assertCheckStatus(
+			t,
+			result,
+			CheckVersionCursorContinuity,
+			DeterministicPass,
+		)
+	}
+}
+
+func TestRunDeterministicChecksRejectsInvalidJournalEvidence(t *testing.T) {
+	fixture := NewContinuousDevelopmentScenario(9)
+	newer := benchmarkJournalState(2, 2, map[string]int64{
+		"reducer": 2,
+	})
+	eventRegressed := benchmarkJournalState(1, 2, map[string]int64{
+		"reducer": 1,
+	})
+	operationRegressed := benchmarkJournalState(3, 1, map[string]int64{
+		"reducer": 3,
+	})
+	consumerRegressed := benchmarkJournalState(3, 3, map[string]int64{
+		"reducer": 1,
+	})
+	retentionRegressed := benchmarkJournalState(3, 3, map[string]int64{
+		"compiler": 1,
+		"reducer":  3,
+	})
+	inconsistent := benchmarkJournalState(1, 1, map[string]int64{
+		"reducer": 2,
+	})
+	evidence := map[CapsuleEvidenceKey]CapsuleEvidence{
+		{TurnNumber: 1, Mode: ModeContextCompactorStrict}: {
+			Journal: &newer,
+		},
+		{TurnNumber: 2, Mode: ModeContextCompactorStrict}: {
+			Journal: &eventRegressed,
+		},
+		{TurnNumber: 3, Mode: ModeContextCompactorStrict}: {
+			Journal: &operationRegressed,
+		},
+		{TurnNumber: 4, Mode: ModeContextCompactorStrict}: {
+			Journal: &consumerRegressed,
+		},
+		{TurnNumber: 5, Mode: ModeContextCompactorStrict}: {
+			Journal: &retentionRegressed,
+		},
+		{TurnNumber: 1, Mode: ModeContextCompactorBalanced}: {
+			Journal: &inconsistent,
+		},
+	}
+
+	results, err := RunDeterministicChecksWithCapsuleEvidence(fixture, evidence)
+	if err != nil {
+		t.Fatalf("RunDeterministicChecksWithCapsuleEvidence() error = %v", err)
+	}
+	regressions := map[int]string{
+		2: "event cursor moved backwards",
+		3: "operation cursor moved backwards",
+		4: "consumer cursor \"reducer\" moved backwards",
+		5: "retention boundary moved backwards",
+	}
+	for turnNumber, detail := range regressions {
+		result := findTurnCheckResult(
+			t,
+			results,
+			turnNumber,
+			ModeContextCompactorStrict,
+		)
+		assertCheckStatus(
+			t,
+			result,
+			CheckVersionCursorContinuity,
+			DeterministicFail,
+		)
+		assertCheckDetailContains(
+			t,
+			result,
+			CheckVersionCursorContinuity,
+			detail,
+		)
+	}
+	balanced := findTurnCheckResult(t, results, 1, ModeContextCompactorBalanced)
+	assertCheckStatus(t, balanced, CheckJournalState, DeterministicFail)
+	assertCheckStatus(
+		t,
+		balanced,
+		CheckVersionCursorContinuity,
+		DeterministicUnsupported,
+	)
+}
+
 func TestRunDeterministicChecksReportsPerTurnFailures(t *testing.T) {
 	fixture := NewContinuousDevelopmentScenario(2)
 	fixture.Turns[1].Number = 7
@@ -343,6 +483,31 @@ func assertCheckStatus(
 	t.Fatalf("turn %d mode %q missing check %q", result.TurnNumber, result.Mode, name)
 }
 
+func assertCheckDetailContains(
+	t *testing.T,
+	result TurnCheckResult,
+	name DeterministicCheckName,
+	want string,
+) {
+	t.Helper()
+	for _, check := range result.Checks {
+		if check.Name == name {
+			if !strings.Contains(check.Detail, want) {
+				t.Fatalf(
+					"turn %d mode %q check %q detail = %q, want %q",
+					result.TurnNumber,
+					result.Mode,
+					name,
+					check.Detail,
+					want,
+				)
+			}
+			return
+		}
+	}
+	t.Fatalf("turn %d mode %q missing check %q", result.TurnNumber, result.Mode, name)
+}
+
 func benchmarkCapsule(
 	t *testing.T,
 	eventSequence int64,
@@ -375,4 +540,24 @@ func benchmarkCapsule(
 		t.Fatalf("SealVerifiedCapsule() error = %v", err)
 	}
 	return capsule
+}
+
+func benchmarkJournalState(
+	eventSequence int64,
+	operationSequence int64,
+	consumerCursors map[string]int64,
+) journal.JournalStateSnapshot {
+	snapshot := journal.JournalStateSnapshot{
+		LastEventSeq:     eventSequence,
+		LastOperationSeq: operationSequence,
+		ConsumerCursors:  consumerCursors,
+	}
+	for _, cursor := range consumerCursors {
+		if !snapshot.HasRetentionBoundary ||
+			cursor < snapshot.RetentionBoundaryEventSeq {
+			snapshot.RetentionBoundaryEventSeq = cursor
+			snapshot.HasRetentionBoundary = true
+		}
+	}
+	return snapshot
 }
