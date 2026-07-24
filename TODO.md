@@ -64,8 +64,21 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Verify soft-budget overflow never rejects a user turn and recovery context
       is reconciled before state-changing actions.
 - [x] Compare full transcript, summary-only, strict, and balanced modes.
-- [ ] Report quality gates, median and worst-case results, foreground and
-      compaction token costs, and turns 51-60 context-size stability.
+- [ ] Produce the five-seed formal 60-turn and endurance 120-turn benchmark
+      report. Run deterministic checks on every turn; evaluate the foreground
+      model at turns 10, 30, 50, and 60 in the formal matrix and turns 60, 90,
+      and 120 in the endurance matrix; add event checkpoints for host
+      compaction, capsule publication or switching, bounded recovery, critical
+      constraint changes, foreground budget-boundary pressure, current-focus
+      changes, and background refresh or publication failures. Deduplicate
+      overlapping triggers, localize failures with separate diagnostic
+      checkpoints, preserve every seed result, and report fixed, event, and
+      diagnostic results separately. Report per-scenario and per-mode median
+      and worst-case values, foreground and compaction input/output token costs
+      by measurement basis, turns 51-60 and 61-120 context-size stability, and
+      all quality Gates. Model-dependent metrics remain `not_evaluated` unless
+      the configured foreground model completes both reproducible matrices; an
+      incomplete report cannot claim release pass.
 
 ## 6. Open-source distribution
 

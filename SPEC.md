@@ -21,7 +21,9 @@ precedence over generated memory.
    without blocking continued conversation when a soft compaction threshold is
    exceeded.
 6. Support Codex CLI and Claude Code through thin adapters.
-7. Measure token reduction and resume quality at 10, 30, 50, and 60 turns.
+7. Measure token reduction and response quality through deterministic
+   per-turn checks plus fixed and risk-triggered model checkpoints in formal
+   60-turn and endurance 120-turn evaluations.
 
 ## 3. Non-goals for the first release
 
@@ -344,26 +346,214 @@ version is shown and confirmed.
 ## 10. Benchmark contract
 
 One turn is one user input followed by one agent response and its tool activity.
-Each implementation milestone is evaluated with a reproducible 60-turn run and
-checkpoints at turns 10, 30, 50, and 60 against the same scenario, repository
-state, model, and acceptance checks. Compaction is triggered by measured token
-usage rather than a fixed turn number, and its model input and output count
-toward the run's token total.
+A benchmark run is one execution for one scenario family, baseline mode, and
+fixture seed. Every turn is processed by deterministic program checks.
+Foreground-model evaluation occurs only at fixed checkpoints, qualifying
+high-risk events, and diagnostic checkpoints added after a failure. The runner
+must not call the foreground model on every turn.
 
-### 10.1 Scenario families
+### 10.1 Evaluation matrices
+
+The formal matrix contains 60-turn runs with fixed foreground-model checkpoints
+at turns 10, 30, 50, and 60.
+
+The endurance matrix contains 120-turn runs with fixed foreground-model
+checkpoints at turns 60, 90, and 120. It performs deterministic checks on every
+turn, including context size, hard-budget compliance, capsule and journal
+state, superseded-requirement inactivity, version and cursor continuity, and
+background publication correctness.
+
+Both reportable matrices use fixture seeds `1`, `2`, `3`, `4`, and `5` across
+every scenario family and baseline mode. The fast development matrix may use
+only seed `1`, but it does not produce reportable median, worst-case, or
+release-pass results.
+
+The 120-turn fixture prefix through turn 60 must be byte-for-byte identical to
+the corresponding 60-turn fixture for the same scenario and seed. Its turn-60
+deterministic and model results may be reused only when the complete benchmark
+manifest and rendered-input digest are identical; otherwise turn 60 is
+evaluated again.
+
+Cells with the same scenario and seed are paired comparisons and must use the
+same initial repository snapshot, foreground model, model settings, tool
+definitions, acceptance checks, and token-counter profile. If the model
+supports an explicit sampling seed, it uses the fixture seed; otherwise the
+report records that seeded sampling is unsupported.
+
+Every report records the benchmark contract and runner versions, fixture and
+acceptance-check digests, initial repository fingerprint, provider and model
+identity, available model revision, sampling settings, tool-definition digest,
+fixture seed, and token-counter identity and mode. Secrets and credentials must
+not enter the report.
+
+Compaction is triggered by measured token usage rather than a fixed turn
+number. Fixed model checkpoints are observation points and do not themselves
+force compaction.
+
+### 10.2 Scenario families
 
 1. Continuous implementation with stable requirements.
 2. Requirement reversal that invalidates an earlier decision.
 3. Compact or new-session recovery followed by continued implementation.
 
-### 10.2 Baselines
+### 10.3 Baselines
 
 - full transcript replay
 - summary-only memory
 - context-compactor `strict`
 - context-compactor `balanced`
 
-### 10.3 Acceptance gates
+### 10.4 Deterministic per-turn checks
+
+Before any model evaluation, the runner performs deterministic checks on every
+turn. Where applicable to the selected mode, these checks cover:
+
+- fixture, session, event, operation, and checkpoint ordering
+- the complete rendered foreground-context size and hard-budget status
+- verified capsule identity, digest, version, generation, and publication state
+- journal state and event, operation, consumer, and retention cursor continuity
+- pending foreground-delta continuity and its measured budget position
+- critical-constraint creation, replacement, supersession, and active status
+- current-focus and active-task derivation
+- stale background refresh rejection and compare-and-swap publication behavior
+- bounded-recovery entry and required reconciliation state
+- absence of retained secrets in memory, rendered context, logs, and reports
+- absence of user-turn rejection caused only by soft-budget pressure
+
+The endurance matrix records these results for all 120 turns. A deterministic
+failure is a Gate failure even when all model checkpoints pass.
+
+### 10.5 Foreground-model checkpoints
+
+In addition to the fixed checkpoints, the runner adds an event checkpoint after
+any of these high-risk events:
+
+- host transcript compaction completes
+- a verified capsule is published or the active capsule changes
+- the compiler enters bounded recovery
+- a critical constraint is added, replaced, updated through a replacement
+  operation, or superseded
+- the measured foreground representation, including its pending delta,
+  approaches or crosses a configured target, trigger, or hard-budget boundary
+- current focus or the active task changes
+- a background compaction, refresh, or publication job fails
+
+A foreground representation approaches a budget boundary when it reaches at
+least 90% of that boundary while remaining below it. One event is emitted per
+boundary episode; the trigger is rearmed only after the measured value falls
+below 85% of that boundary. Crossing means moving from below the boundary to
+meeting or exceeding it.
+
+If multiple event reasons occur for the same rendered state, or a fixed and
+event checkpoint coincide, the runner makes one foreground-model call and
+records every trigger reason. Its token cost and unique invocation count are
+recorded once. The result may be referenced by both the fixed and applicable
+event breakdowns without duplicating the underlying call or cost.
+
+Every foreground-model checkpoint verifies at least:
+
+- correct recall of active critical constraints
+- correct treatment of a new requirement as replacing its superseded
+  predecessor
+- correct current focus and active task
+- a reasonable tool choice or next action under the scenario acceptance checks
+- an `unknown` response when reliable information is unavailable instead of an
+  unsupported guess
+
+The foreground model evaluates the rendered context under test.
+Scenario-specific deterministic acceptance checks evaluate its response, tool
+selection, and proposed state-changing actions. A separate model judge may be
+reported as supplementary evidence but must not determine the release Gate.
+
+### 10.6 Failure localization
+
+Failure at a fixed or event checkpoint does not cause the runner to call the
+foreground model on every later turn.
+
+The runner retains the original failure and inserts a diagnostic checkpoint
+between the most recent passing point and the failing point. It repeatedly
+bisects the remaining turn or ordered-event interval until the first failing
+adjacent turn or event boundary is identified, or no smaller reproducible
+interval exists.
+
+Diagnostic checkpoints use the same fixture, repository state, mode, model,
+settings, counter, and acceptance checks. Their results and token costs are
+reported separately. A later diagnostic pass does not erase or convert the
+original fixed or event checkpoint failure.
+
+### 10.7 Evaluation and aggregation
+
+The report preserves every seed result. Fixed checkpoint, event checkpoint,
+and diagnostic checkpoint results are separate categories:
+
+- fixed results are grouped by matrix and fixed turn
+- event results are grouped by high-risk event type
+- diagnostic results are grouped by the failure they localize
+
+For each scenario, mode, checkpoint category, and applicable metric, the report
+shows all five seed values and:
+
+- the median as the third value after sorting the five values
+- the worst case as the lowest value for recall, task success, and token
+  reduction
+- the worst case as the highest value for token cost, context size, error count,
+  and secret retention or disclosure
+
+The report shows median and worst-case results separately for every scenario
+and mode. The overall worst case is the worst individual scenario-and-seed
+cell; values from different scenarios must not be averaged in a way that hides
+a failing cell.
+
+Event checkpoint counts may vary by seed. Event metrics are aggregated by event
+type after preserving the raw per-seed occurrences and results. A multi-labeled
+model call is referenced in every applicable event-type breakdown but remains
+one unique call in total invocation and token-cost calculations.
+
+Task success for one run is the percentage of applicable deterministic
+scenario acceptance checks that pass. The task-success gap for summary-only,
+strict, or balanced mode is the paired full-transcript success rate minus the
+candidate rate, expressed as percentage points. The full-transcript gap is
+zero by definition.
+
+Quality Gates apply to every fixed and event checkpoint in the reportable
+matrices. A passing median must not hide an individual Gate failure.
+Diagnostic checkpoints localize failures but do not replace the primary Gate
+result.
+
+If no foreground model is configured, its identity cannot be reproduced, or a
+required model execution does not complete, model-dependent quality metrics
+and task success are `not_evaluated`. Deterministic structural checks may still
+be reported, but an incomplete matrix has overall status `not_evaluated` and
+must not be described as a release pass.
+
+### 10.8 Token accounting
+
+Each run reports these model-token totals separately:
+
+- foreground input and output tokens
+- compaction input and output tokens
+- fixed-checkpoint foreground tokens
+- event-checkpoint foreground tokens
+- diagnostic-checkpoint foreground tokens
+- total tokens across all unique model calls
+
+Foreground totals include every foreground agent-model call and the complete
+input actually sent to it, including supported framing, retained messages, and
+tool results. Compaction totals include every model call used to create or
+refresh summaries, capsules, or consolidated memory. Provider retries that
+consume model tokens are included.
+
+A deterministic local compiler that invokes no model reports observed
+compaction model input and output as zero. Deterministic per-turn program checks
+do not add model-token cost. Missing usage observations must be
+`not_evaluated`, not zero.
+
+Each token value records a measurement basis of `observed`, `estimated`, or
+`not_evaluated`. Provider-reported usage is preferred. When it is unavailable,
+the active documented counter may provide an estimate, but observed and
+estimated values are reported separately and are not combined into one median.
+
+### 10.9 Acceptance gates
 
 | Metric | Required result |
 |---|---:|
@@ -381,9 +571,30 @@ toward the run's token total.
 Token reduction targets are at least 30% at 10 turns, 60% at 30 turns, and 75%
 at both 50 and 60 turns. The report must show the reduction trend between the
 50- and 60-turn checkpoints and the per-turn compiled input size for turns
-51-60. A higher 60-turn release target may be set only after a reproducible
-baseline exists. A run that meets token targets but fails a quality gate is a
-failed run.
+51-60.
+
+For each mode and seed, the turns 51-60 stability report includes the raw
+per-turn sizes, median, peak, range (`maximum - minimum`), end drift
+(`turn 60 - turn 51`), peak ratio
+(`maximum(turns 51-60) / max(1, turn 50)`), and per-turn hard-budget status.
+
+The endurance report preserves the raw per-turn sizes and deterministic results
+for turns 61-120. It reports their median, peak, range, end drift
+(`turn 120 - turn 61`), peak ratio
+(`maximum(turns 61-120) / max(1, turn 60)`), and per-turn hard-budget status.
+Token reduction at turns 90 and 120 is reported against the paired
+full-transcript baseline.
+
+Raw series and hard-budget status must remain visible; a median alone must not
+be labeled stable. Version 1 defines the 90- and 120-turn measurements but does
+not add a new token-reduction, range, or drift threshold before a reproducible
+endurance baseline exists.
+
+A higher 60-turn target, a 90- or 120-turn token-reduction target, or an
+additional tail-stability Gate may be set only after that baseline exists.
+A deterministic per-turn failure or any fixed or event model-checkpoint failure
+makes the run fail. A run that meets token targets but fails a quality Gate is
+a failed run.
 
 ## 11. Compatibility and versioning
 
