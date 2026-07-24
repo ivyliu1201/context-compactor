@@ -63,7 +63,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
       before confirmation.
 - [x] Verify soft-budget overflow never rejects a user turn and recovery context
       is reconciled before state-changing actions.
-- [ ] Compare full transcript, summary-only, strict, and balanced modes.
+- [x] Compare full transcript, summary-only, strict, and balanced modes.
 - [ ] Report quality gates, median and worst-case results, foreground and
       compaction token costs, and turns 51-60 context-size stability.
 
