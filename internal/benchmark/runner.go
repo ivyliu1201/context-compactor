@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"context-compactor/internal/compiler"
+	"context-compactor/internal/journal"
 )
 
 type DeterministicStatus string
@@ -32,10 +33,8 @@ const (
 )
 
 var deferredStateChecks = [...]DeterministicCheckName{
-	CheckCapsuleState,
 	CheckJournalState,
 	CheckVersionCursorContinuity,
-	CheckBackgroundPublication,
 	CheckBoundedRecovery,
 }
 
@@ -43,6 +42,21 @@ type DeterministicCheck struct {
 	Name   DeterministicCheckName `json:"name"`
 	Status DeterministicStatus    `json:"status"`
 	Detail string                 `json:"detail,omitempty"`
+}
+
+// CapsuleEvidenceKey identifies one turn and comparison mode in a benchmark
+// fixture.
+type CapsuleEvidenceKey struct {
+	TurnNumber int
+	Mode       ComparisonMode
+}
+
+// CapsuleEvidence carries the active verified capsule for one turn and an
+// optional publication result observed during that turn. It does not add
+// benchmark-only fields to the production capsule schema.
+type CapsuleEvidence struct {
+	Capsule     *compiler.VerifiedCapsule
+	Publication *journal.CapsulePublishResult
 }
 
 // TurnCheckResult records deterministic evidence for one fixture turn and one
@@ -65,11 +79,21 @@ type TurnCheckResult struct {
 // stable turn-then-mode order. State that the synthetic fixture cannot yet
 // represent is reported as unsupported instead of being treated as passing.
 func RunDeterministicChecks(fixture Fixture) ([]TurnCheckResult, error) {
+	return RunDeterministicChecksWithCapsuleEvidence(fixture, nil)
+}
+
+// RunDeterministicChecksWithCapsuleEvidence processes every fixture turn and
+// validates real capsule evidence when the selected mode provides it.
+func RunDeterministicChecksWithCapsuleEvidence(
+	fixture Fixture,
+	evidence map[CapsuleEvidenceKey]CapsuleEvidence,
+) ([]TurnCheckResult, error) {
 	if err := validateDeterministicFixture(fixture); err != nil {
 		return nil, err
 	}
 
 	counter := compiler.RenderCounterProfile()
+	previousCapsules := make(map[ComparisonMode]compiler.VerifiedCapsule)
 	results := make(
 		[]TurnCheckResult,
 		0,
@@ -82,6 +106,24 @@ func RunDeterministicChecks(fixture Fixture) ([]TurnCheckResult, error) {
 			Turns:      fixture.Turns[:turnNumber],
 		}
 		for _, mode := range comparisonModes {
+			evidenceKey := CapsuleEvidenceKey{
+				TurnNumber: turnNumber,
+				Mode:       mode,
+			}
+			turnEvidence, evidenceProvided := evidence[evidenceKey]
+			previousCapsule, hasPreviousCapsule := previousCapsules[mode]
+			capsuleCheck, capsuleValid := checkCapsuleEvidence(
+				mode,
+				turnEvidence,
+				evidenceProvided,
+				previousCapsule,
+				hasPreviousCapsule,
+			)
+			publicationCheck := checkCapsulePublication(
+				mode,
+				turnEvidence,
+				evidenceProvided,
+			)
 			rendered, err := renderModeInput(fixture, prefix, mode)
 			if err != nil {
 				return nil, fmt.Errorf(
@@ -98,7 +140,12 @@ func RunDeterministicChecks(fixture Fixture) ([]TurnCheckResult, error) {
 				mode,
 				rendered,
 				counter,
+				capsuleCheck,
+				publicationCheck,
 			))
+			if capsuleValid {
+				previousCapsules[mode] = *turnEvidence.Capsule
+			}
 		}
 	}
 	return results, nil
@@ -154,6 +201,8 @@ func evaluateTurn(
 	mode ComparisonMode,
 	rendered string,
 	counter compiler.CounterProfile,
+	capsuleCheck DeterministicCheck,
+	publicationCheck DeterministicCheck,
 ) TurnCheckResult {
 	inputTokens := len([]byte(rendered))
 	requirement := activeRequirement(fixture.Scenario, turnNumber)
@@ -164,6 +213,8 @@ func evaluateTurn(
 		checkHardBudget(mode, inputTokens),
 		checkActiveRequirement(fixture.Scenario, turnNumber, mode, rendered),
 		checkCurrentFocus(turn, rendered),
+		capsuleCheck,
+		publicationCheck,
 	}
 	for _, name := range deferredStateChecks {
 		checks = append(checks, DeterministicCheck{
@@ -186,6 +237,110 @@ func evaluateTurn(
 		CurrentFocus:       turn.AgentResponse,
 		Checks:             checks,
 	}
+}
+
+func checkCapsuleEvidence(
+	mode ComparisonMode,
+	evidence CapsuleEvidence,
+	provided bool,
+	previous compiler.VerifiedCapsule,
+	hasPrevious bool,
+) (DeterministicCheck, bool) {
+	if !compactorMode(mode) {
+		return DeterministicCheck{
+			Name:   CheckCapsuleState,
+			Status: DeterministicUnsupported,
+			Detail: "baseline mode does not use a verified capsule",
+		}, false
+	}
+	if !provided || evidence.Capsule == nil {
+		return DeterministicCheck{
+			Name:   CheckCapsuleState,
+			Status: DeterministicUnsupported,
+			Detail: "verified capsule evidence was not provided",
+		}, false
+	}
+
+	capsule := *evidence.Capsule
+	resealed, err := compiler.SealVerifiedCapsule(
+		capsule.Records,
+		compiler.CapsuleMetadata{
+			SourceEventSeq:        capsule.SourceEventSeq,
+			SourceOperationSeq:    capsule.SourceOperationSeq,
+			SourceViewDigest:      capsule.SourceViewDigest,
+			CompilerPolicyVersion: capsule.CompilerPolicyVersion,
+			TokenCounterIdentity:  capsule.TokenCounterIdentity,
+			CreatedAt:             capsule.CreatedAt,
+			RequiredLookupIDs:     capsule.RequiredLookupIDs,
+		},
+	)
+	if err != nil {
+		return failedCapsuleCheck("capsule metadata or records are invalid"), false
+	}
+	if resealed.ContentDigest != capsule.ContentDigest {
+		return failedCapsuleCheck("capsule content digest does not match its contents"), false
+	}
+	if capsule.CompilerPolicyVersion != compiler.CompilerPolicyVersion {
+		return failedCapsuleCheck("capsule compiler policy version is unsupported"), false
+	}
+	if capsule.TokenCounterIdentity != compiler.RenderCounterIdentity {
+		return failedCapsuleCheck("capsule token counter identity is unsupported"), false
+	}
+	if hasPrevious &&
+		(capsule.SourceEventSeq < previous.SourceEventSeq ||
+			capsule.SourceOperationSeq < previous.SourceOperationSeq) {
+		return failedCapsuleCheck("capsule source cursor moved backwards"), false
+	}
+
+	return DeterministicCheck{
+		Name:   CheckCapsuleState,
+		Status: DeterministicPass,
+	}, true
+}
+
+func failedCapsuleCheck(detail string) DeterministicCheck {
+	return DeterministicCheck{
+		Name:   CheckCapsuleState,
+		Status: DeterministicFail,
+		Detail: detail,
+	}
+}
+
+func checkCapsulePublication(
+	mode ComparisonMode,
+	evidence CapsuleEvidence,
+	provided bool,
+) DeterministicCheck {
+	if !compactorMode(mode) {
+		return DeterministicCheck{
+			Name:   CheckBackgroundPublication,
+			Status: DeterministicUnsupported,
+			Detail: "baseline mode does not publish a verified capsule",
+		}
+	}
+	if !provided || evidence.Publication == nil {
+		return DeterministicCheck{
+			Name:   CheckBackgroundPublication,
+			Status: DeterministicUnsupported,
+			Detail: "capsule publication evidence was not provided",
+		}
+	}
+	if evidence.Publication.Published == evidence.Publication.Discarded {
+		return DeterministicCheck{
+			Name:   CheckBackgroundPublication,
+			Status: DeterministicFail,
+			Detail: "publication result must be exactly one of published or discarded",
+		}
+	}
+	return DeterministicCheck{
+		Name:   CheckBackgroundPublication,
+		Status: DeterministicPass,
+	}
+}
+
+func compactorMode(mode ComparisonMode) bool {
+	return mode == ModeContextCompactorStrict ||
+		mode == ModeContextCompactorBalanced
 }
 
 func checkFixtureOrdering(turn Turn, wantTurn int) DeterministicCheck {
