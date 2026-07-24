@@ -61,7 +61,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Add continuous-development, requirement-reversal, and resume scenarios.
 - [x] Verify Resume Preview fields and that no state-changing action occurs
       before confirmation.
-- [ ] Verify soft-budget overflow never rejects a user turn and recovery context
+- [x] Verify soft-budget overflow never rejects a user turn and recovery context
       is reconciled before state-changing actions.
 - [ ] Compare full transcript, summary-only, strict, and balanced modes.
 - [ ] Report quality gates, median and worst-case results, foreground and
