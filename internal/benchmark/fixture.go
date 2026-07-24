@@ -8,13 +8,37 @@ const TotalTurns = 60
 
 var checkpointTurns = [...]int{10, 30, 50, 60}
 
+// ScenarioKind identifies which synthetic benchmark flow produced a fixture.
+type ScenarioKind string
+
+const (
+	ScenarioSynthetic             ScenarioKind = "synthetic"
+	ScenarioContinuousDevelopment ScenarioKind = "continuous_development"
+	ScenarioRequirementReversal   ScenarioKind = "requirement_reversal"
+	ScenarioResume                ScenarioKind = "resume"
+)
+
+// TurnMarker annotates synthetic events for benchmark assertions. It does not
+// represent durable runtime state.
+type TurnMarker string
+
+const (
+	MarkerRequirementEstablished TurnMarker = "requirement_established"
+	MarkerRequirementReversed    TurnMarker = "requirement_reversed"
+	MarkerCheckpointSaved        TurnMarker = "checkpoint_saved"
+	MarkerSessionBoundary        TurnMarker = "session_boundary"
+	MarkerResumeRequested        TurnMarker = "resume_requested"
+	MarkerResumeConfirmed        TurnMarker = "resume_confirmed"
+)
+
 // Turn represents one benchmark user input, agent response, and its tool
 // activity.
 type Turn struct {
-	Number         int      `json:"number"`
-	UserInput      string   `json:"user_input"`
-	AgentResponse  string   `json:"agent_response"`
-	ToolActivities []string `json:"tool_activities"`
+	Number         int          `json:"number"`
+	UserInput      string       `json:"user_input"`
+	AgentResponse  string       `json:"agent_response"`
+	ToolActivities []string     `json:"tool_activities"`
+	Markers        []TurnMarker `json:"markers,omitempty"`
 }
 
 // Checkpoint is an independent snapshot of the fixture through TurnNumber.
@@ -26,6 +50,7 @@ type Checkpoint struct {
 // Fixture contains one deterministic 60-turn synthetic run and its required
 // evaluation checkpoints.
 type Fixture struct {
+	Scenario    ScenarioKind `json:"scenario"`
 	Seed        uint64       `json:"seed"`
 	Turns       []Turn       `json:"turns"`
 	Checkpoints []Checkpoint `json:"checkpoints"`
@@ -35,10 +60,18 @@ type Fixture struct {
 // The generated text is synthetic and contains no captured prompts or tool
 // output.
 func NewSyntheticFixture(seed uint64) Fixture {
+	return newFixture(ScenarioSynthetic, seed, syntheticTurn)
+}
+
+func newFixture(
+	scenario ScenarioKind,
+	seed uint64,
+	buildTurn func(uint64, int) Turn,
+) Fixture {
 	turns := make([]Turn, TotalTurns)
 	for index := range turns {
 		number := index + 1
-		turns[index] = syntheticTurn(seed, number)
+		turns[index] = buildTurn(seed, number)
 	}
 
 	checkpoints := make([]Checkpoint, len(checkpointTurns))
@@ -50,6 +83,7 @@ func NewSyntheticFixture(seed uint64) Fixture {
 	}
 
 	return Fixture{
+		Scenario:    scenario,
 		Seed:        seed,
 		Turns:       turns,
 		Checkpoints: checkpoints,
@@ -74,6 +108,7 @@ func cloneTurns(turns []Turn) []Turn {
 	for index, turn := range turns {
 		cloned[index] = turn
 		cloned[index].ToolActivities = append([]string(nil), turn.ToolActivities...)
+		cloned[index].Markers = append([]TurnMarker(nil), turn.Markers...)
 	}
 	return cloned
 }

@@ -35,6 +35,9 @@ func TestNewSyntheticFixtureIsReproducible(t *testing.T) {
 func TestNewSyntheticFixtureHas60SequentialTurns(t *testing.T) {
 	fixture := NewSyntheticFixture(7)
 
+	if fixture.Scenario != ScenarioSynthetic {
+		t.Fatalf("Scenario = %q, want %q", fixture.Scenario, ScenarioSynthetic)
+	}
 	if len(fixture.Turns) != TotalTurns {
 		t.Fatalf("len(Turns) = %d, want %d", len(fixture.Turns), TotalTurns)
 	}
