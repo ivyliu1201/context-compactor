@@ -56,7 +56,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 
 ## 5. Benchmark suite
 
-- [ ] Implement reproducible 60-turn synthetic fixtures with checkpoints at
+- [x] Implement reproducible 60-turn synthetic fixtures with checkpoints at
       turns 10, 30, 50, and 60.
 - [ ] Add continuous-development, requirement-reversal, and resume scenarios.
 - [ ] Verify Resume Preview fields and that no state-changing action occurs
