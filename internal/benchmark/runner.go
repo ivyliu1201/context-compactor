@@ -6,6 +6,7 @@ import (
 
 	"context-compactor/internal/compiler"
 	"context-compactor/internal/journal"
+	"context-compactor/internal/runtime"
 )
 
 type DeterministicStatus string
@@ -32,10 +33,6 @@ const (
 	CheckBoundedRecovery         DeterministicCheckName = "bounded_recovery"
 )
 
-var deferredStateChecks = [...]DeterministicCheckName{
-	CheckBoundedRecovery,
-}
-
 type DeterministicCheck struct {
 	Name   DeterministicCheckName `json:"name"`
 	Status DeterministicStatus    `json:"status"`
@@ -50,11 +47,13 @@ type CapsuleEvidenceKey struct {
 }
 
 // CapsuleEvidence carries the active verified capsule, durable journal state,
-// and an optional publication result observed during one turn. It does not add
-// benchmark-only fields to production evidence schemas.
+// foreground compile result, and an optional publication result observed
+// during one turn. It does not add benchmark-only fields to production
+// evidence schemas.
 type CapsuleEvidence struct {
 	Capsule     *compiler.VerifiedCapsule
 	Journal     *journal.JournalStateSnapshot
+	Foreground  *runtime.ForegroundCompileResult
 	Publication *journal.CapsulePublishResult
 }
 
@@ -124,6 +123,11 @@ func RunDeterministicChecksWithCapsuleEvidence(
 				turnEvidence,
 				evidenceProvided,
 			)
+			recoveryCheck := checkBoundedRecovery(
+				mode,
+				turnEvidence,
+				evidenceProvided,
+			)
 			previousJournal, hasPreviousJournal := previousJournals[mode]
 			journalCheck, cursorCheck, journalValid := checkJournalEvidence(
 				mode,
@@ -152,6 +156,7 @@ func RunDeterministicChecksWithCapsuleEvidence(
 				journalCheck,
 				cursorCheck,
 				publicationCheck,
+				recoveryCheck,
 			))
 			if capsuleValid {
 				previousCapsules[mode] = *turnEvidence.Capsule
@@ -218,6 +223,7 @@ func evaluateTurn(
 	journalCheck DeterministicCheck,
 	cursorCheck DeterministicCheck,
 	publicationCheck DeterministicCheck,
+	recoveryCheck DeterministicCheck,
 ) TurnCheckResult {
 	inputTokens := len([]byte(rendered))
 	requirement := activeRequirement(fixture.Scenario, turnNumber)
@@ -232,13 +238,7 @@ func evaluateTurn(
 		journalCheck,
 		cursorCheck,
 		publicationCheck,
-	}
-	for _, name := range deferredStateChecks {
-		checks = append(checks, DeterministicCheck{
-			Name:   name,
-			Status: DeterministicUnsupported,
-			Detail: "synthetic fixture does not provide this runtime state",
-		})
+		recoveryCheck,
 	}
 
 	return TurnCheckResult{
@@ -496,6 +496,99 @@ func checkCapsulePublication(
 	return DeterministicCheck{
 		Name:   CheckBackgroundPublication,
 		Status: DeterministicPass,
+	}
+}
+
+func checkBoundedRecovery(
+	mode ComparisonMode,
+	evidence CapsuleEvidence,
+	provided bool,
+) DeterministicCheck {
+	if !compactorMode(mode) {
+		return unsupportedRecoveryCheck(
+			"baseline mode does not use compactor foreground recovery",
+		)
+	}
+	if !provided || evidence.Foreground == nil {
+		return unsupportedRecoveryCheck(
+			"foreground compile evidence was not provided",
+		)
+	}
+
+	result := *evidence.Foreground
+	switch {
+	case strings.TrimSpace(result.Text) == "":
+		return failedRecoveryCheck("foreground compiled context is empty")
+	case result.UsedTokens != len([]byte(result.Text)):
+		return failedRecoveryCheck(
+			"foreground token usage does not match the compiled context size",
+		)
+	case result.UsedTokens > benchmarkCompilerLimits.Hard:
+		return failedRecoveryCheck(
+			fmt.Sprintf(
+				"foreground context uses %d tokens, hard limit is %d",
+				result.UsedTokens,
+				benchmarkCompilerLimits.Hard,
+			),
+		)
+	case result.RemainingHardTokens !=
+		benchmarkCompilerLimits.Hard-result.UsedTokens:
+		return failedRecoveryCheck(
+			"foreground remaining hard budget is inconsistent",
+		)
+	case result.CounterIdentity != compiler.RenderCounterIdentity:
+		return failedRecoveryCheck(
+			"foreground token counter identity is unsupported",
+		)
+	case result.CounterMode != compiler.CounterConservative:
+		return failedRecoveryCheck(
+			"foreground token counter mode is not conservative",
+		)
+	case strings.TrimSpace(result.CounterDescription) == "":
+		return failedRecoveryCheck(
+			"foreground token counter description is empty",
+		)
+	case result.RequiresRetrieval != (len(result.RequiredLookupIDs) > 0):
+		return failedRecoveryCheck(
+			"foreground retrieval state does not match required lookup IDs",
+		)
+	}
+
+	seenLookupIDs := make(map[string]struct{}, len(result.RequiredLookupIDs))
+	for _, lookupID := range result.RequiredLookupIDs {
+		switch {
+		case strings.TrimSpace(lookupID) == "":
+			return failedRecoveryCheck("required lookup ID is empty")
+		case strings.TrimSpace(lookupID) != lookupID:
+			return failedRecoveryCheck(
+				"required lookup ID contains surrounding whitespace",
+			)
+		}
+		if _, exists := seenLookupIDs[lookupID]; exists {
+			return failedRecoveryCheck("required lookup ID is duplicated")
+		}
+		seenLookupIDs[lookupID] = struct{}{}
+	}
+
+	return DeterministicCheck{
+		Name:   CheckBoundedRecovery,
+		Status: DeterministicPass,
+	}
+}
+
+func unsupportedRecoveryCheck(detail string) DeterministicCheck {
+	return DeterministicCheck{
+		Name:   CheckBoundedRecovery,
+		Status: DeterministicUnsupported,
+		Detail: detail,
+	}
+}
+
+func failedRecoveryCheck(detail string) DeterministicCheck {
+	return DeterministicCheck{
+		Name:   CheckBoundedRecovery,
+		Status: DeterministicFail,
+		Detail: detail,
 	}
 }
 

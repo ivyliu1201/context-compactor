@@ -7,6 +7,7 @@ import (
 
 	"context-compactor/internal/compiler"
 	"context-compactor/internal/journal"
+	"context-compactor/internal/runtime"
 )
 
 func TestRunDeterministicChecksSupportsFormalAndEnduranceSchedules(t *testing.T) {
@@ -91,6 +92,12 @@ func TestRunDeterministicChecksSupportsFormalAndEnduranceSchedules(t *testing.T)
 						CheckVersionCursorContinuity,
 						DeterministicUnsupported,
 					)
+					assertCheckStatus(
+						t,
+						result,
+						CheckBoundedRecovery,
+						DeterministicUnsupported,
+					)
 					if mode == ModeContextCompactorStrict ||
 						mode == ModeContextCompactorBalanced {
 						assertCheckStatus(t, result, CheckHardBudget, DeterministicPass)
@@ -115,14 +122,6 @@ func TestRunDeterministicChecksSupportsFormalAndEnduranceSchedules(t *testing.T)
 							result,
 							CheckActiveRequirement,
 							DeterministicPass,
-						)
-					}
-					for _, checkName := range deferredStateChecks {
-						assertCheckStatus(
-							t,
-							result,
-							checkName,
-							DeterministicUnsupported,
 						)
 					}
 				}
@@ -389,6 +388,121 @@ func TestRunDeterministicChecksRejectsInvalidJournalEvidence(t *testing.T) {
 	)
 }
 
+func TestRunDeterministicChecksValidatesBoundedRecoveryEvidence(t *testing.T) {
+	fixture := NewContinuousDevelopmentScenario(10)
+	direct := benchmarkForegroundResult("direct context", nil)
+	recovered := benchmarkForegroundResult(
+		"bounded recovery context",
+		[]string{"decision:7", "constraint:3"},
+	)
+	recovered.RebuiltFromJournal = true
+	carriedRecovery := benchmarkForegroundResult(
+		"carried recovery context",
+		[]string{"artifact:4"},
+	)
+	evidence := map[CapsuleEvidenceKey]CapsuleEvidence{
+		{TurnNumber: 1, Mode: ModeContextCompactorStrict}: {
+			Foreground: &direct,
+		},
+		{TurnNumber: 2, Mode: ModeContextCompactorStrict}: {
+			Foreground: &recovered,
+		},
+		{TurnNumber: 3, Mode: ModeContextCompactorStrict}: {
+			Foreground: &carriedRecovery,
+		},
+	}
+
+	results, err := RunDeterministicChecksWithCapsuleEvidence(fixture, evidence)
+	if err != nil {
+		t.Fatalf("RunDeterministicChecksWithCapsuleEvidence() error = %v", err)
+	}
+	for turnNumber := 1; turnNumber <= 3; turnNumber++ {
+		assertCheckStatus(
+			t,
+			findTurnCheckResult(
+				t,
+				results,
+				turnNumber,
+				ModeContextCompactorStrict,
+			),
+			CheckBoundedRecovery,
+			DeterministicPass,
+		)
+	}
+}
+
+func TestRunDeterministicChecksRejectsInvalidBoundedRecoveryEvidence(
+	t *testing.T,
+) {
+	fixture := NewContinuousDevelopmentScenario(11)
+	sizeMismatch := benchmarkForegroundResult("size mismatch", nil)
+	sizeMismatch.UsedTokens++
+	overBudget := benchmarkForegroundResult(
+		strings.Repeat("x", benchmarkCompilerLimits.Hard+1),
+		nil,
+	)
+	remainingMismatch := benchmarkForegroundResult("remaining mismatch", nil)
+	remainingMismatch.RemainingHardTokens--
+	wrongCounter := benchmarkForegroundResult("wrong counter", nil)
+	wrongCounter.CounterIdentity = "unsupported-counter"
+	wrongMode := benchmarkForegroundResult("wrong mode", nil)
+	wrongMode.CounterMode = compiler.CounterExact
+	blankDescription := benchmarkForegroundResult("blank description", nil)
+	blankDescription.CounterDescription = " "
+	missingIDs := benchmarkForegroundResult("missing lookup IDs", nil)
+	missingIDs.RequiresRetrieval = true
+	unexpectedIDs := benchmarkForegroundResult(
+		"unexpected lookup IDs",
+		[]string{"decision:1"},
+	)
+	unexpectedIDs.RequiresRetrieval = false
+	blankID := benchmarkForegroundResult("blank lookup ID", []string{" "})
+	duplicateID := benchmarkForegroundResult(
+		"duplicate lookup ID",
+		[]string{"decision:1", "decision:1"},
+	)
+	invalidResults := []runtime.ForegroundCompileResult{
+		{},
+		sizeMismatch,
+		overBudget,
+		remainingMismatch,
+		wrongCounter,
+		wrongMode,
+		blankDescription,
+		missingIDs,
+		unexpectedIDs,
+		blankID,
+		duplicateID,
+	}
+	evidence := make(map[CapsuleEvidenceKey]CapsuleEvidence, len(invalidResults))
+	for index := range invalidResults {
+		turnNumber := index + 1
+		result := invalidResults[index]
+		evidence[CapsuleEvidenceKey{
+			TurnNumber: turnNumber,
+			Mode:       ModeContextCompactorStrict,
+		}] = CapsuleEvidence{Foreground: &result}
+	}
+
+	results, err := RunDeterministicChecksWithCapsuleEvidence(fixture, evidence)
+	if err != nil {
+		t.Fatalf("RunDeterministicChecksWithCapsuleEvidence() error = %v", err)
+	}
+	for turnNumber := range invalidResults {
+		assertCheckStatus(
+			t,
+			findTurnCheckResult(
+				t,
+				results,
+				turnNumber+1,
+				ModeContextCompactorStrict,
+			),
+			CheckBoundedRecovery,
+			DeterministicFail,
+		)
+	}
+}
+
 func TestRunDeterministicChecksReportsPerTurnFailures(t *testing.T) {
 	fixture := NewContinuousDevelopmentScenario(2)
 	fixture.Turns[1].Number = 7
@@ -560,4 +674,21 @@ func benchmarkJournalState(
 		}
 	}
 	return snapshot
+}
+
+func benchmarkForegroundResult(
+	text string,
+	requiredLookupIDs []string,
+) runtime.ForegroundCompileResult {
+	usedTokens := len([]byte(text))
+	return runtime.ForegroundCompileResult{
+		Text:                text,
+		UsedTokens:          usedTokens,
+		RemainingHardTokens: benchmarkCompilerLimits.Hard - usedTokens,
+		CounterIdentity:     compiler.RenderCounterIdentity,
+		CounterMode:         compiler.CounterConservative,
+		CounterDescription:  compiler.RenderCounterProfile().Description,
+		RequiresRetrieval:   len(requiredLookupIDs) > 0,
+		RequiredLookupIDs:   requiredLookupIDs,
+	}
 }
