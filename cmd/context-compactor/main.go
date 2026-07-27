@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
+	"context-compactor/internal/benchmark"
 	"context-compactor/internal/compiler"
 	"context-compactor/internal/journal"
 	"context-compactor/internal/management"
@@ -26,8 +30,9 @@ var defaultLimits = compiler.BudgetLimits{
 }
 
 var (
-	currentExecutable = os.Executable
-	managementProbe   = management.ProbeExecutable
+	currentExecutable     = os.Executable
+	managementProbe       = management.ProbeExecutable
+	benchmarkModelInvoker = commandForegroundModelInvoker
 )
 
 func main() {
@@ -53,13 +58,15 @@ func run(
 	now func() time.Time,
 ) error {
 	if len(args) == 0 {
-		return fmt.Errorf("command is required: hook or refresh-worker")
+		return fmt.Errorf("command is required: hook, refresh-worker, benchmark, or management command")
 	}
 	switch args[0] {
 	case "hook":
 		return runHook(ctx, args[1:], input, output, diagnostics, now)
 	case "refresh-worker":
 		return runRefreshWorker(ctx, args[1:], diagnostics, now)
+	case "benchmark":
+		return runBenchmark(ctx, args[1:], output, diagnostics)
 	case "install", "uninstall", "status", "doctor":
 		return runManagement(
 			ctx,
@@ -253,6 +260,184 @@ func runManagement(
 		}
 	}
 	return err
+}
+
+func runBenchmark(
+	ctx context.Context,
+	args []string,
+	output io.Writer,
+	diagnostics io.Writer,
+) error {
+	flags := flag.NewFlagSet("benchmark", flag.ContinueOnError)
+	flags.SetOutput(diagnostics)
+	matrixName := flags.String("matrix", string(benchmark.MatrixFormal), "benchmark matrix: formal or endurance")
+	scenarioName := flags.String("scenario", "all", "scenario: all, continuous_development, requirement_reversal, or resume")
+	seedName := flags.String("seed", "all", "seed: all or a positive integer")
+	modeName := flags.String("mode", "all", "mode: all, full_transcript, summary_only, context_compactor_strict, or context_compactor_balanced")
+	modelCommand := flags.String("model-command", "", "external foreground model command; reads JSON request on stdin and writes JSON response on stdout")
+	var modelArgs stringListFlag
+	flags.Var(&modelArgs, "model-arg", "argument passed to --model-command; may be repeated")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("benchmark does not accept positional arguments")
+	}
+
+	options, err := parseBenchmarkOptions(
+		*matrixName,
+		*scenarioName,
+		*seedName,
+		*modeName,
+	)
+	if err != nil {
+		return err
+	}
+	var invoke benchmark.ForegroundModelInvoker
+	if strings.TrimSpace(*modelCommand) != "" {
+		invoke = benchmarkModelInvoker(strings.TrimSpace(*modelCommand), []string(modelArgs))
+	}
+	report, err := benchmark.RunForegroundBenchmark(ctx, options, invoke)
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(output)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(report); err != nil {
+		return fmt.Errorf("encode benchmark report: %w", err)
+	}
+	return nil
+}
+
+type stringListFlag []string
+
+func (flagValue *stringListFlag) String() string {
+	return strings.Join(*flagValue, ",")
+}
+
+func (flagValue *stringListFlag) Set(value string) error {
+	*flagValue = append(*flagValue, value)
+	return nil
+}
+
+func parseBenchmarkOptions(
+	matrixName string,
+	scenarioName string,
+	seedName string,
+	modeName string,
+) (benchmark.ForegroundBenchmarkOptions, error) {
+	matrix, err := parseBenchmarkMatrix(matrixName)
+	if err != nil {
+		return benchmark.ForegroundBenchmarkOptions{}, err
+	}
+	scenarios, err := parseBenchmarkScenarios(scenarioName)
+	if err != nil {
+		return benchmark.ForegroundBenchmarkOptions{}, err
+	}
+	seeds, err := parseBenchmarkSeeds(seedName)
+	if err != nil {
+		return benchmark.ForegroundBenchmarkOptions{}, err
+	}
+	modes, err := parseBenchmarkModes(modeName)
+	if err != nil {
+		return benchmark.ForegroundBenchmarkOptions{}, err
+	}
+	return benchmark.ForegroundBenchmarkOptions{
+		Matrix:    matrix,
+		Scenarios: scenarios,
+		Seeds:     seeds,
+		Modes:     modes,
+	}, nil
+}
+
+func parseBenchmarkMatrix(value string) (benchmark.MatrixKind, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "formal":
+		return benchmark.MatrixFormal, nil
+	case "endurance":
+		return benchmark.MatrixEndurance, nil
+	default:
+		return "", fmt.Errorf("benchmark matrix must be formal or endurance")
+	}
+}
+
+func parseBenchmarkScenarios(value string) ([]benchmark.ScenarioKind, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "all":
+		return nil, nil
+	case "continuous_development":
+		return []benchmark.ScenarioKind{benchmark.ScenarioContinuousDevelopment}, nil
+	case "requirement_reversal":
+		return []benchmark.ScenarioKind{benchmark.ScenarioRequirementReversal}, nil
+	case "resume":
+		return []benchmark.ScenarioKind{benchmark.ScenarioResume}, nil
+	default:
+		return nil, fmt.Errorf("benchmark scenario must be all, continuous_development, requirement_reversal, or resume")
+	}
+}
+
+func parseBenchmarkSeeds(value string) ([]uint64, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "all" {
+		return nil, nil
+	}
+	seed, err := strconv.ParseUint(trimmed, 10, 64)
+	if err != nil || seed == 0 {
+		return nil, fmt.Errorf("benchmark seed must be all or a positive integer")
+	}
+	return []uint64{seed}, nil
+}
+
+func parseBenchmarkModes(value string) ([]benchmark.ComparisonMode, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "all":
+		return nil, nil
+	case "full_transcript":
+		return []benchmark.ComparisonMode{benchmark.ModeFullTranscript}, nil
+	case "summary_only":
+		return []benchmark.ComparisonMode{benchmark.ModeSummaryOnly}, nil
+	case "context_compactor_strict", "strict":
+		return []benchmark.ComparisonMode{benchmark.ModeContextCompactorStrict}, nil
+	case "context_compactor_balanced", "balanced":
+		return []benchmark.ComparisonMode{benchmark.ModeContextCompactorBalanced}, nil
+	default:
+		return nil, fmt.Errorf("benchmark mode must be all, full_transcript, summary_only, context_compactor_strict, or context_compactor_balanced")
+	}
+}
+
+func commandForegroundModelInvoker(
+	command string,
+	args []string,
+) benchmark.ForegroundModelInvoker {
+	return func(
+		ctx context.Context,
+		request benchmark.ForegroundModelRequest,
+	) (benchmark.ForegroundModelResponse, error) {
+		payload, err := json.Marshal(request)
+		if err != nil {
+			return benchmark.ForegroundModelResponse{}, fmt.Errorf("encode model request: %w", err)
+		}
+		cmd := exec.CommandContext(ctx, command, args...)
+		cmd.Stdin = bytes.NewReader(payload)
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		if err := cmd.Run(); err != nil {
+			return benchmark.ForegroundModelResponse{}, fmt.Errorf("model command failed: %w", err)
+		}
+		decoder := json.NewDecoder(&stdout)
+		decoder.DisallowUnknownFields()
+		var response benchmark.ForegroundModelResponse
+		if err := decoder.Decode(&response); err != nil {
+			return benchmark.ForegroundModelResponse{}, fmt.Errorf("decode model response: %w", err)
+		}
+		if decoder.Decode(&struct{}{}) != io.EOF {
+			return benchmark.ForegroundModelResponse{}, fmt.Errorf("decode model response: multiple JSON values")
+		}
+		if strings.TrimSpace(response.Content) == "" {
+			return benchmark.ForegroundModelResponse{}, fmt.Errorf("model response content is required")
+		}
+		return response, nil
+	}
 }
 
 func runSelfCheck(args []string, output io.Writer) error {

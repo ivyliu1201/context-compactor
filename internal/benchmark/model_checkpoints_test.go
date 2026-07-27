@@ -1,7 +1,9 @@
 package benchmark
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -179,6 +181,140 @@ func TestPlanForegroundModelCheckpointsRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestEvaluateForegroundModelCheckpointsReportsNotEvaluatedWithoutInvoker(t *testing.T) {
+	fixture := NewContinuousDevelopmentScenario(31)
+	benchmarkCase := MatrixCase{
+		Matrix:   MatrixFormal,
+		Scenario: fixture.Scenario,
+		Seed:     fixture.Seed,
+		Mode:     ModeContextCompactorBalanced,
+		Fixture:  fixture,
+	}
+
+	results, err := EvaluateForegroundModelCheckpoints(
+		context.Background(),
+		benchmarkCase,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("EvaluateForegroundModelCheckpoints() error = %v", err)
+	}
+	if len(results) != len(checkpointTurns) {
+		t.Fatalf("len(results) = %d, want %d", len(results), len(checkpointTurns))
+	}
+	for _, result := range results {
+		if result.Status != GateNotEvaluated {
+			t.Fatalf("checkpoint status = %q, want not_evaluated", result.Status)
+		}
+		for _, check := range result.Checks {
+			if check.Status != GateNotEvaluated {
+				t.Fatalf("check = %+v, want not_evaluated", check)
+			}
+		}
+	}
+}
+
+func TestEvaluateForegroundModelCheckpointsRunsInvokerAndAppliesQualityChecks(t *testing.T) {
+	fixture := NewRequirementReversalScenario(32)
+	benchmarkCase := MatrixCase{
+		Matrix:   MatrixFormal,
+		Scenario: fixture.Scenario,
+		Seed:     fixture.Seed,
+		Mode:     ModeContextCompactorStrict,
+		Fixture:  fixture,
+	}
+	var calls int
+	invoker := func(
+		_ context.Context,
+		request ForegroundModelRequest,
+	) (ForegroundModelResponse, error) {
+		calls++
+		if request.Protocol != ForegroundModelRequestProtocol {
+			t.Fatalf("request protocol = %q", request.Protocol)
+		}
+		if strings.Contains(request.RenderedInput, "expected") {
+			t.Fatal("request leaks expected answers")
+		}
+		turn := request.TurnNumber
+		identity := scenarioIdentity(fixture.Seed, turn)
+		requirement := activeRequirement(fixture.Scenario, turn)
+		actionRequirement := "legacy-decision"
+		action := "synthetic-verify-legacy-decision-" + identity
+		if turn >= requirementReversalAtTurn {
+			actionRequirement = "current-decision"
+			action = "synthetic-verify-current-decision-" + identity
+		}
+		return ForegroundModelResponse{
+			Content: strings.Join([]string{
+				"active requirement: " + requirement,
+				"current focus: synthetic-progress-" + actionRequirement + "-" + identity,
+				"next action: " + action,
+			}, "\n"),
+			InputTokens:  10,
+			OutputTokens: 5,
+			TokenBasis:   "observed",
+			Model:        "fake-model",
+		}, nil
+	}
+
+	results, err := EvaluateForegroundModelCheckpoints(
+		context.Background(),
+		benchmarkCase,
+		nil,
+		invoker,
+	)
+	if err != nil {
+		t.Fatalf("EvaluateForegroundModelCheckpoints() error = %v", err)
+	}
+	if calls != len(checkpointTurns) {
+		t.Fatalf("model calls = %d, want %d", calls, len(checkpointTurns))
+	}
+	for _, result := range results {
+		if result.Status != GatePass {
+			t.Fatalf("checkpoint result = %+v, want pass", result)
+		}
+	}
+}
+
+func TestEvaluateForegroundModelCheckpointsFailsStaleRequirementClaim(t *testing.T) {
+	fixture := NewRequirementReversalScenario(33)
+	benchmarkCase := MatrixCase{
+		Matrix:   MatrixFormal,
+		Scenario: fixture.Scenario,
+		Seed:     fixture.Seed,
+		Mode:     ModeFullTranscript,
+		Fixture:  fixture,
+	}
+	invoker := func(
+		_ context.Context,
+		request ForegroundModelRequest,
+	) (ForegroundModelResponse, error) {
+		identity := scenarioIdentity(fixture.Seed, request.TurnNumber)
+		return ForegroundModelResponse{
+			Content: strings.Join([]string{
+				"active requirement: legacy-decision",
+				"current focus: synthetic-progress-current-decision-" + identity,
+				"next action: synthetic-verify-current-decision-" + identity,
+			}, "\n"),
+		}, nil
+	}
+
+	results, err := EvaluateForegroundModelCheckpoints(
+		context.Background(),
+		benchmarkCase,
+		nil,
+		invoker,
+	)
+	if err != nil {
+		t.Fatalf("EvaluateForegroundModelCheckpoints() error = %v", err)
+	}
+	turn50 := modelCheckpointResultAt(t, results, 50)
+	if turn50.Status != GateFail {
+		t.Fatalf("turn 50 status = %q, want fail", turn50.Status)
+	}
+}
+
 func assertForegroundCheckpointTurns(
 	t *testing.T,
 	checkpoints []ForegroundModelCheckpoint,
@@ -213,4 +349,19 @@ func foregroundCheckpointAt(
 	}
 	t.Fatalf("missing foreground checkpoint at turn %d", turnNumber)
 	return ForegroundModelCheckpoint{}
+}
+
+func modelCheckpointResultAt(
+	t *testing.T,
+	results []ForegroundModelCheckpointResult,
+	turnNumber int,
+) ForegroundModelCheckpointResult {
+	t.Helper()
+	for _, result := range results {
+		if result.TurnNumber == turnNumber {
+			return result
+		}
+	}
+	t.Fatalf("missing model checkpoint at turn %d", turnNumber)
+	return ForegroundModelCheckpointResult{}
 }

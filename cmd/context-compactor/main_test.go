@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"context-compactor/internal/benchmark"
 	"context-compactor/internal/journal"
 	"context-compactor/internal/management"
 )
@@ -211,6 +213,104 @@ func TestSelfCheckUsesExactBoundedDocument(t *testing.T) {
 	}
 }
 
+func TestBenchmarkCommandReportsNotEvaluatedWithoutModelCommand(t *testing.T) {
+	var output, diagnostics bytes.Buffer
+	err := run(
+		context.Background(),
+		[]string{
+			"benchmark",
+			"--matrix", "formal",
+			"--scenario", "resume",
+			"--seed", "1",
+			"--mode", "balanced",
+		},
+		bytes.NewReader(nil),
+		&output,
+		&diagnostics,
+		func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		t.Fatalf("benchmark run() error = %v, diagnostics = %q", err, diagnostics.String())
+	}
+	var report benchmark.ForegroundBenchmarkReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatalf("decode benchmark output: %v", err)
+	}
+	if report.Summary.Cases != 1 || report.Summary.Checkpoints != 4 {
+		t.Fatalf("benchmark summary = %+v", report.Summary)
+	}
+	if report.Summary.TokenGateStatus != benchmark.GatePass {
+		t.Fatalf("token gate status = %q, want pass", report.Summary.TokenGateStatus)
+	}
+	if report.Summary.ModelGateStatus != benchmark.GateNotEvaluated {
+		t.Fatalf("model gate status = %q, want not_evaluated", report.Summary.ModelGateStatus)
+	}
+	if report.Summary.DeterministicGateStatus != benchmark.GatePass {
+		t.Fatalf(
+			"deterministic gate status = %q, want pass",
+			report.Summary.DeterministicGateStatus,
+		)
+	}
+}
+
+func TestBenchmarkCommandRunsConfiguredModelInvoker(t *testing.T) {
+	originalInvoker := benchmarkModelInvoker
+	benchmarkModelInvoker = func(command string, args []string) benchmark.ForegroundModelInvoker {
+		if command != "fake-model" || len(args) != 1 || args[0] != "arg" {
+			t.Fatalf("model command = %q args %v", command, args)
+		}
+		return func(
+			_ context.Context,
+			request benchmark.ForegroundModelRequest,
+		) (benchmark.ForegroundModelResponse, error) {
+			identity := "0000000000000001-" + twoDigit(request.TurnNumber)
+			return benchmark.ForegroundModelResponse{
+				Content: strings.Join([]string{
+					"active requirement: stable-requirement",
+					"current focus: synthetic-progress-stable-requirement-" + identity,
+					"next action: synthetic-verify-stable-requirement-" + identity,
+				}, "\n"),
+				InputTokens:  100,
+				OutputTokens: 20,
+				TokenBasis:   "observed",
+				Model:        "fake",
+			}, nil
+		}
+	}
+	t.Cleanup(func() { benchmarkModelInvoker = originalInvoker })
+
+	var output, diagnostics bytes.Buffer
+	err := run(
+		context.Background(),
+		[]string{
+			"benchmark",
+			"--matrix", "formal",
+			"--scenario", "continuous_development",
+			"--seed", "1",
+			"--mode", "balanced",
+			"--model-command", "fake-model",
+			"--model-arg", "arg",
+		},
+		bytes.NewReader(nil),
+		&output,
+		&diagnostics,
+		func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		t.Fatalf("benchmark run() error = %v, diagnostics = %q", err, diagnostics.String())
+	}
+	var report benchmark.ForegroundBenchmarkReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatalf("decode benchmark output: %v", err)
+	}
+	if report.Summary.ModelGateStatus != benchmark.GatePass {
+		t.Fatalf("model gate status = %q, want pass", report.Summary.ModelGateStatus)
+	}
+	if report.Summary.ModelNotEvaluated != 0 || report.Summary.ModelGateFailures != 0 {
+		t.Fatalf("model summary = %+v", report.Summary)
+	}
+}
+
 type managementCommandOutput struct {
 	Command string              `json:"command"`
 	Reports []management.Report `json:"reports"`
@@ -243,4 +343,11 @@ func runManagementCommand(
 		t.Fatalf("decode %s output: %v", args[0], err)
 	}
 	return decoded
+}
+
+func twoDigit(value int) string {
+	if value < 10 {
+		return "0" + strconv.Itoa(value)
+	}
+	return strconv.Itoa(value)
 }
