@@ -51,15 +51,37 @@ go vet ./...
 
 See [SPEC.md](SPEC.md) for the behavioral contract and benchmark gates.
 
-Build and invoke the source-stage executable:
+Run the formal benchmark with foreground model checks:
 
 ```sh
-go build -o context-compactor ./cmd/context-compactor
-context-compactor install --host all --project-root /path/to/repository
-context-compactor status --host all --project-root /path/to/repository
-context-compactor doctor --host all --project-root /path/to/repository
-context-compactor refresh-worker --project-root /path/to/repository
-context-compactor uninstall --host all --project-root /path/to/repository
+export OPENAI_API_KEY="..."
+docker run --rm -e OPENAI_API_KEY -v "$PWD:/workspace" -w /workspace \
+  -e GOCACHE=/workspace/.cache/go-build \
+  -e GOMODCACHE=/workspace/.cache/go-mod \
+  golang:1.26 go run ./cmd/context-compactor benchmark --matrix formal \
+  --model-command /usr/bin/python3 \
+  --model-arg /workspace/scripts/foreground_model_openai.py
+```
+
+Set `OPENAI_FOREGROUND_MODEL` to override the default foreground model. When no
+model command is configured, the benchmark still reports token and deterministic
+gates, but model-dependent gates remain `not_evaluated`.
+
+Install from this checked-out source (Windows PowerShell 5.1+):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot .
+```
+
+The installer defaults `AgentHost` to `codex`, and supports `-AgentHost claude` or
+`-AgentHost all`. It builds `amd64` with Docker (`golang:1.26`), installs to
+`%LOCALAPPDATA%\context-compactor` with a SHA-256-first-12 filename, then runs
+`self-check`, `install`, `status`, and `doctor`. This is still source-stage
+installation; there is no public GitHub Release or public binary download path yet.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost claude
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost all
 ```
 
 The hook reads exactly one host payload from standard input and reserves

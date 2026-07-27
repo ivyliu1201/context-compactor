@@ -42,15 +42,37 @@ go vet ./...
 
 行為契約與 benchmark Gate 請見 [SPEC.md](SPEC.md)。
 
-建置並執行目前的 source-stage executable：
+執行含 foreground model 檢查的正式 benchmark：
 
 ```sh
-go build -o context-compactor ./cmd/context-compactor
-context-compactor install --host all --project-root /path/to/repository
-context-compactor status --host all --project-root /path/to/repository
-context-compactor doctor --host all --project-root /path/to/repository
-context-compactor refresh-worker --project-root /path/to/repository
-context-compactor uninstall --host all --project-root /path/to/repository
+export OPENAI_API_KEY="..."
+docker run --rm -e OPENAI_API_KEY -v "$PWD:/workspace" -w /workspace \
+  -e GOCACHE=/workspace/.cache/go-build \
+  -e GOMODCACHE=/workspace/.cache/go-mod \
+  golang:1.26 go run ./cmd/context-compactor benchmark --matrix formal \
+  --model-command /usr/bin/python3 \
+  --model-arg /workspace/scripts/foreground_model_openai.py
+```
+
+可用 `OPENAI_FOREGROUND_MODEL` 覆寫預設 foreground model。未設定 model command
+時，benchmark 仍會回報 token 與 deterministic gate，但 model-dependent gate 會是
+`not_evaluated`。
+
+安裝目前這份 source-stage（Windows PowerShell 5.1+）：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot .
+```
+
+安裝腳本預設 `AgentHost` 為 `codex`，可改為 `-AgentHost claude` 或
+`-AgentHost all`。它會用 Docker (`golang:1.26`) 建置 `amd64`，安裝到
+`%LOCALAPPDATA%\context-compactor`，並用檔案 SHA-256 前 12 碼命名，接著執行
+`self-check`、`install`、`status`、`doctor`。目前仍為 source-stage 安裝，尚未
+有 GitHub Release 或公網 binary 下載入口。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost claude
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost all
 ```
 
 Hook 只從標準輸入讀取一個 host payload，標準輸出只用來回傳 host JSON。Install
