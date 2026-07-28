@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [string]$ProjectRoot = (Get-Location).Path,
+    [string]$ProjectRoot = $HOME,
 
     [ValidateSet("codex", "claude", "all")]
     [string]$AgentHost = "codex",
@@ -20,6 +20,7 @@ $repository = "ivyliu1201/context-compactor"
 $assetName = "context-compactor-windows-amd64.exe"
 $checksumsName = "checksums.txt"
 $expectedSelfCheck = '{"protocol":"context-compactor/v1","status":"ok"}'
+$useDynamicCodexProjectRoot = -not $PSBoundParameters.ContainsKey("ProjectRoot")
 
 function Invoke-ContextCompactor {
     param(
@@ -145,8 +146,7 @@ try {
         throw "Installed executable returned an unexpected self-check response."
     }
 
-    Write-Host "Installing $AgentHost hooks into $resolvedProjectRoot..."
-    $installReport = Invoke-ContextCompactor -Executable $installedPath -Arguments @(
+    $installArguments = @(
         "install",
         "--host",
         $AgentHost,
@@ -155,6 +155,15 @@ try {
         "--executable",
         $installedPath
     )
+    if ($useDynamicCodexProjectRoot) {
+        $installArguments += "--dynamic-codex-project-root"
+        Write-Host "Installing global $AgentHost hooks for $resolvedProjectRoot..."
+    } else {
+        Write-Host "Installing $AgentHost hooks into $resolvedProjectRoot..."
+    }
+    $installReport = Invoke-ContextCompactor `
+        -Executable $installedPath `
+        -Arguments $installArguments
     $hookInstalled = $true
 
     $statusReport = Invoke-ContextCompactor -Executable $installedPath -Arguments @(

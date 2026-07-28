@@ -158,9 +158,24 @@ func TestManagementCommandsInstallDoctorStatusAndUninstall(t *testing.T) {
 		root,
 		"--executable",
 		executable,
+		"--dynamic-codex-project-root",
 	})
 	if install.Command != "install" || len(install.Reports) != 2 {
 		t.Fatalf("install output = %+v", install)
+	}
+	codexHooks, err := os.ReadFile(filepath.Join(root, ".codex", "hooks.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(Codex hooks) error = %v", err)
+	}
+	if strings.Contains(string(codexHooks), "--project-root") {
+		t.Fatalf("dynamic Codex hooks contain fixed project root: %s", codexHooks)
+	}
+	claudeSettings, err := os.ReadFile(filepath.Join(root, ".claude", "settings.local.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(Claude settings) error = %v", err)
+	}
+	if !strings.Contains(string(claudeSettings), "--project-root") {
+		t.Fatalf("dynamic Codex install changed Claude project root: %s", claudeSettings)
 	}
 	status := runManagementCommand(t, now, []string{
 		"status",

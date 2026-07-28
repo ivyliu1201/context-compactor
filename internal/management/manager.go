@@ -36,10 +36,11 @@ type Host string
 type ProbeFunc func(context.Context, string) error
 
 type Manager struct {
-	ProjectRoot string
-	Executable  string
-	Now         func() time.Time
-	Probe       ProbeFunc
+	ProjectRoot             string
+	DynamicCodexProjectRoot bool
+	Executable              string
+	Now                     func() time.Time
+	Probe                   ProbeFunc
 }
 
 type Report struct {
@@ -67,10 +68,11 @@ type hostInstalled struct {
 }
 
 type managerState struct {
-	root       string
-	executable string
-	now        time.Time
-	probe      ProbeFunc
+	root                    string
+	dynamicCodexProjectRoot bool
+	executable              string
+	now                     time.Time
+	probe                   ProbeFunc
 }
 
 func (manager Manager) Install(
@@ -106,7 +108,12 @@ func (manager Manager) Install(
 			}
 			configCreated = previous.ConfigCreated
 		}
-		command, commandWindows := hookCommands(state.executable, state.root, host)
+		command, commandWindows := hookCommands(
+			state.executable,
+			state.root,
+			host,
+			state.dynamicCodexProjectRoot,
+		)
 		if err := addOwnedHooks(document, host, command, commandWindows); err != nil {
 			return nil, fmt.Errorf("add %s hook definition: %w", host, err)
 		}
@@ -287,10 +294,11 @@ func (manager Manager) validate(
 		}
 	}
 	return managerState{
-		root:       filepath.Clean(root),
-		executable: executable,
-		now:        now,
-		probe:      probe,
+		root:                    filepath.Clean(root),
+		dynamicCodexProjectRoot: manager.DynamicCodexProjectRoot,
+		executable:              executable,
+		now:                     now,
+		probe:                   probe,
 	}, selected, nil
 }
 
@@ -461,13 +469,19 @@ func hostConfigPath(root string, host Host) string {
 	}
 }
 
-func hookCommands(executable, root string, host Host) (string, string) {
+func hookCommands(
+	executable,
+	root string,
+	host Host,
+	dynamicCodexProjectRoot bool,
+) (string, string) {
 	arguments := []string{
 		"hook",
 		"--host",
 		string(host),
-		"--project-root",
-		root,
+	}
+	if host != HostCodex || !dynamicCodexProjectRoot {
+		arguments = append(arguments, "--project-root", root)
 	}
 	if runtime.GOOS == "windows" {
 		command := windowsCommand(append([]string{executable}, arguments...))

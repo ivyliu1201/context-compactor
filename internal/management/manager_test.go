@@ -103,6 +103,46 @@ func TestManagerInstallDoctorStatusAndUninstallPreserveOtherHooks(t *testing.T) 
 	}
 }
 
+func TestManagerInstallDynamicCodexProjectRootOmitsFixedRoot(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	executable := testExecutable(t, root)
+	manager := testManager(root, executable, func(context.Context, string) error {
+		return nil
+	})
+	manager.DynamicCodexProjectRoot = true
+
+	if _, err := manager.Install(ctx, []Host{HostCodex}); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	current, _, err := loadManifest(
+		filepath.Join(root, ".context-compactor", "install.json"),
+	)
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+	installed := current.Hosts[HostCodex]
+	if strings.Contains(installed.Command, "--project-root") ||
+		strings.Contains(installed.CommandWindows, "--project-root") {
+		t.Fatalf(
+			"dynamic hook commands contain fixed project root: %q / %q",
+			installed.Command,
+			installed.CommandWindows,
+		)
+	}
+	codex := readTestJSON(t, filepath.Join(root, ".codex", "hooks.json"))
+	if countCommand(t, codex, "SessionStart", installed.Command) != 1 ||
+		countCommand(t, codex, "UserPromptSubmit", installed.Command) != 1 {
+		t.Fatal("dynamic Codex hook definitions are missing")
+	}
+	if _, err := manager.Doctor(ctx, []Host{HostCodex}); err != nil {
+		t.Fatalf("Doctor() error = %v", err)
+	}
+	if _, err := manager.Uninstall(ctx, []Host{HostCodex}); err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+}
+
 func TestManagerRemovesOnlyConfigurationFilesItCreated(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

@@ -206,6 +206,11 @@ func runManagement(
 		"",
 		"installed executable path; install only",
 	)
+	dynamicCodexProjectRoot := flags.Bool(
+		"dynamic-codex-project-root",
+		false,
+		"resolve Codex project root from each hook cwd; install only",
+	)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -222,6 +227,9 @@ func runManagement(
 	if action != "install" && strings.TrimSpace(*executable) != "" {
 		return fmt.Errorf("--executable is only supported by install")
 	}
+	if action != "install" && *dynamicCodexProjectRoot {
+		return fmt.Errorf("--dynamic-codex-project-root is only supported by install")
+	}
 	if now == nil {
 		return fmt.Errorf("management clock is required")
 	}
@@ -233,10 +241,11 @@ func runManagement(
 		}
 	}
 	manager := management.Manager{
-		ProjectRoot: *projectRoot,
-		Executable:  executablePath,
-		Now:         now,
-		Probe:       managementProbe,
+		ProjectRoot:             *projectRoot,
+		DynamicCodexProjectRoot: *dynamicCodexProjectRoot,
+		Executable:              executablePath,
+		Now:                     now,
+		Probe:                   managementProbe,
 	}
 
 	var reports []management.Report
