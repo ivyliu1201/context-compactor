@@ -82,7 +82,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 
 ## 6. Open-source distribution
 
-- [ ] Confirm the final GitHub module path before the first public release.
-- [ ] Add supported-platform CI after build commands are stable.
-- [ ] Add security, privacy, and contribution documentation.
-- [ ] Prepare a draft `v0.1.0` release only after MVP verification passes.
+- [x] Confirm the final GitHub module path before the first public release.
+- [x] Add supported-platform CI after build commands are stable.
+- [x] Add security, privacy, and contribution documentation.
+- [x] Publish the `v1.0.0` release only after MVP verification passes.
