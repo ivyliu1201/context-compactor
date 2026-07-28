@@ -89,6 +89,48 @@ func TestDecodeHookNormalizesSupportedCodexEvents(t *testing.T) {
 	}
 }
 
+func TestDecodeHookAcceptsUTF8BOM(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantName HookEventName
+		wantKind protocol.EventKind
+	}{
+		{
+			name:     "session start",
+			input:    `{"session_id":"session-1","transcript_path":null,"cwd":"C:\\repo","hook_event_name":"SessionStart","model":"gpt-5","permission_mode":"default","source":"startup"}`,
+			wantName: EventSessionStart,
+			wantKind: protocol.EventSessionStart,
+		},
+		{
+			name:     "user prompt",
+			input:    `{"session_id":"session-1","turn_id":"turn-7","transcript_path":null,"cwd":"C:\\repo","hook_event_name":"UserPromptSubmit","model":"gpt-5","permission_mode":"default","prompt":"transient prompt"}`,
+			wantName: EventUserPromptSubmit,
+			wantKind: protocol.EventUserPrompt,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			decoded, err := DecodeHook(
+				strings.NewReader("\uFEFF"+test.input),
+				hookTestTime,
+			)
+			if err != nil {
+				t.Fatalf("DecodeHook() error = %v", err)
+			}
+			if decoded.Name != test.wantName || decoded.Event.Kind != test.wantKind {
+				t.Fatalf(
+					"DecodeHook() = %+v, want name %q and kind %q",
+					decoded,
+					test.wantName,
+					test.wantKind,
+				)
+			}
+		})
+	}
+}
+
 func TestDecodeHookUsesDeterministicIdentityWithoutPromptPersistence(t *testing.T) {
 	first := `{"session_id":"session-1","turn_id":"turn-7","transcript_path":null,"cwd":"C:\\repo","hook_event_name":"UserPromptSubmit","model":"gpt-5","permission_mode":"default","prompt":"first prompt"}`
 	retry := strings.Replace(first, "first prompt", "changed retry payload", 1)
@@ -158,6 +200,11 @@ func TestDecodeHookRejectsInvalidCodexInput(t *testing.T) {
 		{
 			name:  "trailing JSON",
 			input: `{"hook_event_name":"Stop"}{}`,
+			want:  "exactly one JSON value",
+		},
+		{
+			name:  "BOM with trailing JSON",
+			input: "\uFEFF" + `{"hook_event_name":"Stop"}{}`,
 			want:  "exactly one JSON value",
 		},
 	}

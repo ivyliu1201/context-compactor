@@ -3,6 +3,7 @@
 package codex
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -495,7 +496,14 @@ func decodeOneJSON(reader io.Reader) ([]byte, error) {
 	if reader == nil {
 		return nil, fmt.Errorf("input reader is required")
 	}
-	decoder := json.NewDecoder(reader)
+	buffered := bufio.NewReader(reader)
+	if prefix, err := buffered.Peek(3); err == nil &&
+		bytes.Equal(prefix, []byte{0xEF, 0xBB, 0xBF}) {
+		if _, err := buffered.Discard(3); err != nil {
+			return nil, fmt.Errorf("discard UTF-8 BOM: %w", err)
+		}
+	}
+	decoder := json.NewDecoder(buffered)
 	var raw json.RawMessage
 	if err := decoder.Decode(&raw); err != nil {
 		return nil, err
