@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-amd64:
+    name: Windows amd64 release
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: "0"
+      GOARCH: amd64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build Windows executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -trimpath -ldflags="-s -w" -o dist/context-compactor-windows-amd64.exe ./cmd/context-compactor
+
+      - name: Create SHA-256 checksums
+        shell: pwsh
+        run: |
+          $asset = "dist/context-compactor-windows-amd64.exe"
+          $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  context-compactor-windows-amd64.exe" |
+            Set-Content -LiteralPath dist/checksums.txt -Encoding ascii
+
+      - name: Create draft GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $arguments = @(
+            "release",
+            "create",
+            $env:GITHUB_REF_NAME,
+            "dist/context-compactor-windows-amd64.exe#Windows amd64 executable",
+            "dist/checksums.txt#SHA-256 checksums",
+            "--draft",
+            "--generate-notes",
+            "--title",
+            "context-compactor $env:GITHUB_REF_NAME",
+            "--verify-tag"
+          )
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "gh release create failed with exit code $LASTEXITCODE."
+          }
