@@ -6,6 +6,7 @@ import (
 
 	"context-compactor/internal/compiler"
 	"context-compactor/internal/journal"
+	"context-compactor/internal/privacy"
 	"context-compactor/internal/runtime"
 )
 
@@ -31,6 +32,10 @@ const (
 	CheckVersionCursorContinuity DeterministicCheckName = "version_cursor_continuity"
 	CheckBackgroundPublication   DeterministicCheckName = "background_publication"
 	CheckBoundedRecovery         DeterministicCheckName = "bounded_recovery"
+	CheckCriticalContradiction   DeterministicCheckName = "critical_contradiction"
+	CheckSecretRetention         DeterministicCheckName = "secret_retention"
+	CheckSoftBudgetAcceptance    DeterministicCheckName = "soft_budget_turn_acceptance"
+	CheckRecoveryReconciliation  DeterministicCheckName = "recovery_reconciliation"
 )
 
 type DeterministicCheck struct {
@@ -128,6 +133,12 @@ func RunDeterministicChecksWithCapsuleEvidence(
 				turnEvidence,
 				evidenceProvided,
 			)
+			reconciliationCheck := checkRecoveryReconciliation(
+				mode,
+				turnEvidence,
+				evidenceProvided,
+				turn,
+			)
 			previousJournal, hasPreviousJournal := previousJournals[mode]
 			journalCheck, cursorCheck, journalValid := checkJournalEvidence(
 				mode,
@@ -157,6 +168,7 @@ func RunDeterministicChecksWithCapsuleEvidence(
 				cursorCheck,
 				publicationCheck,
 				recoveryCheck,
+				reconciliationCheck,
 			))
 			if capsuleValid {
 				previousCapsules[mode] = *turnEvidence.Capsule
@@ -224,6 +236,7 @@ func evaluateTurn(
 	cursorCheck DeterministicCheck,
 	publicationCheck DeterministicCheck,
 	recoveryCheck DeterministicCheck,
+	reconciliationCheck DeterministicCheck,
 ) TurnCheckResult {
 	inputTokens := len([]byte(rendered))
 	requirement := activeRequirement(fixture.Scenario, turnNumber)
@@ -233,12 +246,16 @@ func evaluateTurn(
 		checkRenderedContextSize(inputTokens),
 		checkHardBudget(mode, inputTokens),
 		checkActiveRequirement(fixture.Scenario, turnNumber, mode, rendered),
+		checkCriticalContradiction(fixture.Scenario, turnNumber, rendered),
 		checkCurrentFocus(turn, rendered),
+		checkSecretRetention(turn, rendered),
+		checkSoftBudgetAcceptance(turn),
 		capsuleCheck,
 		journalCheck,
 		cursorCheck,
 		publicationCheck,
 		recoveryCheck,
+		reconciliationCheck,
 	}
 
 	return TurnCheckResult{
@@ -592,6 +609,49 @@ func failedRecoveryCheck(detail string) DeterministicCheck {
 	}
 }
 
+func checkRecoveryReconciliation(
+	mode ComparisonMode,
+	evidence CapsuleEvidence,
+	provided bool,
+	turn Turn,
+) DeterministicCheck {
+	if !compactorMode(mode) {
+		return DeterministicCheck{
+			Name:   CheckRecoveryReconciliation,
+			Status: DeterministicUnsupported,
+			Detail: "baseline mode does not use compactor recovery reconciliation",
+		}
+	}
+	if !provided || evidence.Foreground == nil {
+		return DeterministicCheck{
+			Name:   CheckRecoveryReconciliation,
+			Status: DeterministicUnsupported,
+			Detail: "foreground compile evidence was not provided",
+		}
+	}
+	if !evidence.Foreground.RequiresRetrieval {
+		return DeterministicCheck{
+			Name:   CheckRecoveryReconciliation,
+			Status: DeterministicPass,
+		}
+	}
+	for _, activity := range turn.ToolActivities {
+		if strings.Contains(strings.ToLower(activity), "edit") ||
+			strings.Contains(strings.ToLower(activity), "write") ||
+			strings.Contains(strings.ToLower(activity), "publish") {
+			return DeterministicCheck{
+				Name:   CheckRecoveryReconciliation,
+				Status: DeterministicFail,
+				Detail: "state-changing action occurred with unreconciled recovery context",
+			}
+		}
+	}
+	return DeterministicCheck{
+		Name:   CheckRecoveryReconciliation,
+		Status: DeterministicPass,
+	}
+}
+
 func compactorMode(mode ComparisonMode) bool {
 	return mode == ModeContextCompactorStrict ||
 		mode == ModeContextCompactorBalanced
@@ -718,4 +778,58 @@ func checkCurrentFocus(turn Turn, rendered string) DeterministicCheck {
 		}
 	}
 	return DeterministicCheck{Name: CheckCurrentFocus, Status: DeterministicPass}
+}
+
+func checkCriticalContradiction(
+	scenario ScenarioKind,
+	turnNumber int,
+	rendered string,
+) DeterministicCheck {
+	if !strings.Contains(rendered, activeRequirement(scenario, turnNumber)) {
+		return DeterministicCheck{
+			Name:   CheckCriticalContradiction,
+			Status: DeterministicFail,
+			Detail: "rendered context omits the active requirement",
+		}
+	}
+	return DeterministicCheck{
+		Name:   CheckCriticalContradiction,
+		Status: DeterministicPass,
+	}
+}
+
+func checkSecretRetention(turn Turn, rendered string) DeterministicCheck {
+	if privacy.ContainsPotentialSecret(rendered) ||
+		privacy.ContainsPotentialSecret(turn.UserInput) ||
+		privacy.ContainsPotentialSecret(turn.AgentResponse) {
+		return DeterministicCheck{
+			Name:   CheckSecretRetention,
+			Status: DeterministicFail,
+			Detail: "potential secret was retained in benchmark context",
+		}
+	}
+	for _, activity := range turn.ToolActivities {
+		if privacy.ContainsPotentialSecret(activity) {
+			return DeterministicCheck{
+				Name:   CheckSecretRetention,
+				Status: DeterministicFail,
+				Detail: "potential secret was retained in benchmark tool activity",
+			}
+		}
+	}
+	return DeterministicCheck{Name: CheckSecretRetention, Status: DeterministicPass}
+}
+
+func checkSoftBudgetAcceptance(turn Turn) DeterministicCheck {
+	if strings.TrimSpace(turn.AgentResponse) == "" {
+		return DeterministicCheck{
+			Name:   CheckSoftBudgetAcceptance,
+			Status: DeterministicFail,
+			Detail: "user turn has no agent response",
+		}
+	}
+	return DeterministicCheck{
+		Name:   CheckSoftBudgetAcceptance,
+		Status: DeterministicPass,
+	}
 }

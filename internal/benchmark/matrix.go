@@ -11,6 +11,7 @@ type MatrixKind string
 const (
 	MatrixFormal    MatrixKind = "formal"
 	MatrixEndurance MatrixKind = "endurance"
+	MatrixAll       MatrixKind = "all"
 )
 
 var (

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // ForegroundCheckpointReason identifies a high-risk event that requires an
@@ -82,6 +83,8 @@ type ForegroundModelRequest struct {
 	Mode          ComparisonMode               `json:"mode"`
 	TurnNumber    int                          `json:"turn_number"`
 	Fixed         bool                         `json:"fixed"`
+	Diagnostic    bool                         `json:"diagnostic,omitempty"`
+	DiagnosticFor int                          `json:"diagnostic_for_turn,omitempty"`
 	EventReasons  []ForegroundCheckpointReason `json:"event_reasons,omitempty"`
 	RenderedInput string                       `json:"rendered_input"`
 	Questions     []string                     `json:"questions"`
@@ -90,11 +93,19 @@ type ForegroundModelRequest struct {
 // ForegroundModelResponse is the strict JSON response expected from a
 // configured model command.
 type ForegroundModelResponse struct {
-	Content      string `json:"content"`
-	InputTokens  int    `json:"input_tokens,omitempty"`
-	OutputTokens int    `json:"output_tokens,omitempty"`
-	TokenBasis   string `json:"token_basis,omitempty"`
-	Model        string `json:"model,omitempty"`
+	Content               string `json:"content"`
+	InputTokens           int    `json:"input_tokens,omitempty"`
+	CachedInputTokens     int    `json:"cached_input_tokens,omitempty"`
+	OutputTokens          int    `json:"output_tokens,omitempty"`
+	ReasoningOutputTokens int    `json:"reasoning_output_tokens,omitempty"`
+	TokenBasis            string `json:"token_basis,omitempty"`
+	Provider              string `json:"provider,omitempty"`
+	Model                 string `json:"model,omitempty"`
+	ModelRevision         string `json:"model_revision,omitempty"`
+	ReasoningEffort       string `json:"reasoning_effort,omitempty"`
+	SamplingSeedStatus    string `json:"sampling_seed_status,omitempty"`
+	RunnerVersion         string `json:"runner_version,omitempty"`
+	ToolDefinitionDigest  string `json:"tool_definition_digest,omitempty"`
 }
 
 type ForegroundModelInvoker func(
@@ -103,10 +114,18 @@ type ForegroundModelInvoker func(
 ) (ForegroundModelResponse, error)
 
 type ModelTokenUsage struct {
-	InputTokens  int    `json:"input_tokens,omitempty"`
-	OutputTokens int    `json:"output_tokens,omitempty"`
-	TokenBasis   string `json:"token_basis,omitempty"`
-	Model        string `json:"model,omitempty"`
+	InputTokens           int    `json:"input_tokens,omitempty"`
+	CachedInputTokens     int    `json:"cached_input_tokens,omitempty"`
+	OutputTokens          int    `json:"output_tokens,omitempty"`
+	ReasoningOutputTokens int    `json:"reasoning_output_tokens,omitempty"`
+	TokenBasis            string `json:"token_basis,omitempty"`
+	Provider              string `json:"provider,omitempty"`
+	Model                 string `json:"model,omitempty"`
+	ModelRevision         string `json:"model_revision,omitempty"`
+	ReasoningEffort       string `json:"reasoning_effort,omitempty"`
+	SamplingSeedStatus    string `json:"sampling_seed_status,omitempty"`
+	RunnerVersion         string `json:"runner_version,omitempty"`
+	ToolDefinitionDigest  string `json:"tool_definition_digest,omitempty"`
 }
 
 type ModelQualityCheck struct {
@@ -116,13 +135,15 @@ type ModelQualityCheck struct {
 }
 
 type ForegroundModelCheckpointResult struct {
-	TurnNumber   int                          `json:"turn_number"`
-	Fixed        bool                         `json:"fixed"`
-	EventReasons []ForegroundCheckpointReason `json:"event_reasons,omitempty"`
-	Status       GateStatus                   `json:"status"`
-	Checks       []ModelQualityCheck          `json:"checks"`
-	TokenUsage   ModelTokenUsage              `json:"token_usage,omitempty"`
-	Error        string                       `json:"error,omitempty"`
+	TurnNumber    int                          `json:"turn_number"`
+	Fixed         bool                         `json:"fixed"`
+	Diagnostic    bool                         `json:"diagnostic,omitempty"`
+	DiagnosticFor int                          `json:"diagnostic_for_turn,omitempty"`
+	EventReasons  []ForegroundCheckpointReason `json:"event_reasons,omitempty"`
+	Status        GateStatus                   `json:"status"`
+	Checks        []ModelQualityCheck          `json:"checks"`
+	TokenUsage    ModelTokenUsage              `json:"token_usage,omitempty"`
+	Error         string                       `json:"error,omitempty"`
 }
 
 type TokenReductionResult struct {
@@ -140,6 +161,14 @@ type ForegroundBenchmarkCheckpointResult struct {
 	Model          ForegroundModelCheckpointResult `json:"model"`
 }
 
+type ForegroundBenchmarkTurnTokenResult struct {
+	TurnNumber            int                  `json:"turn_number"`
+	TokenReduction        TokenReductionResult `json:"token_reduction"`
+	ForegroundCheckpoint  bool                 `json:"foreground_checkpoint"`
+	ForegroundModelStatus GateStatus           `json:"foreground_model_status,omitempty"`
+	ForegroundModelUsage  *ModelTokenUsage     `json:"foreground_model_usage,omitempty"`
+}
+
 type DeterministicFailure struct {
 	TurnNumber int                    `json:"turn_number"`
 	Check      DeterministicCheckName `json:"check"`
@@ -152,7 +181,14 @@ type ForegroundBenchmarkCaseResult struct {
 	Seed                     uint64                                `json:"seed"`
 	Mode                     ComparisonMode                        `json:"mode"`
 	Status                   MatrixCaseExecutionStatus             `json:"status"`
+	TurnResults              []TurnCheckResult                     `json:"turn_results,omitempty"`
+	TurnTokenMeasurements    []ForegroundBenchmarkTurnTokenResult  `json:"turn_token_measurements,omitempty"`
 	Checkpoints              []ForegroundBenchmarkCheckpointResult `json:"checkpoints,omitempty"`
+	Diagnostics              []ForegroundFailureDiagnostic         `json:"diagnostics,omitempty"`
+	TaskSuccess              RateResult                            `json:"task_success"`
+	TaskSuccessGap           RateResult                            `json:"task_success_gap"`
+	TokenAccounting          BenchmarkTokenAccounting              `json:"token_accounting"`
+	Stability                *ContextStabilityResult               `json:"stability,omitempty"`
 	DeterministicFailures    []DeterministicFailure                `json:"deterministic_failures,omitempty"`
 	DeterministicUnsupported int                                   `json:"deterministic_unsupported"`
 	Error                    string                                `json:"error,omitempty"`
@@ -170,19 +206,28 @@ type ForegroundBenchmarkSummary struct {
 	ModelNotEvaluated        int        `json:"model_not_evaluated"`
 	DeterministicFailures    int        `json:"deterministic_failures"`
 	DeterministicUnsupported int        `json:"deterministic_unsupported"`
+	TaskSuccessGapFailures   int        `json:"task_success_gap_failures"`
+	TaskSuccessGateStatus    GateStatus `json:"task_success_gate_status"`
+	OverallStatus            GateStatus `json:"overall_status"`
 }
 
 type ForegroundBenchmarkReport struct {
-	Matrix  MatrixKind                      `json:"matrix"`
-	Cases   []ForegroundBenchmarkCaseResult `json:"cases"`
-	Summary ForegroundBenchmarkSummary      `json:"summary"`
+	Matrix          MatrixKind                      `json:"matrix"`
+	Manifest        BenchmarkManifest               `json:"manifest"`
+	Cases           []ForegroundBenchmarkCaseResult `json:"cases"`
+	Aggregates      []BenchmarkAggregate            `json:"aggregates"`
+	TokenAccounting BenchmarkTokenAccounting        `json:"token_accounting"`
+	Gates           []BenchmarkGateResult           `json:"gates"`
+	Summary         ForegroundBenchmarkSummary      `json:"summary"`
 }
 
 type ForegroundBenchmarkOptions struct {
-	Matrix    MatrixKind
-	Scenarios []ScenarioKind
-	Seeds     []uint64
-	Modes     []ComparisonMode
+	Matrix                MatrixKind
+	Scenarios             []ScenarioKind
+	Seeds                 []uint64
+	Modes                 []ComparisonMode
+	RepositoryFingerprint string
+	Parallelism           int
 }
 
 type foregroundModelExpectation struct {
@@ -286,49 +331,38 @@ func RunForegroundBenchmark(
 		Matrix: normalized.Matrix,
 		Cases:  make([]ForegroundBenchmarkCaseResult, 0),
 	}
-	for _, scenario := range normalized.Scenarios {
-		for _, seed := range normalized.Seeds {
-			fixture := reportableMatrixFixture(normalized.Matrix, scenario, seed)
-			for _, mode := range normalized.Modes {
-				if err := ctx.Err(); err != nil {
-					return report, fmt.Errorf("foreground benchmark interrupted: %w", err)
+	matrices := []MatrixKind{normalized.Matrix}
+	if normalized.Matrix == MatrixAll {
+		matrices = reportableMatrices[:]
+	}
+	benchmarkCases := make([]MatrixCase, 0)
+	for _, matrix := range matrices {
+		for _, scenario := range normalized.Scenarios {
+			for _, seed := range normalized.Seeds {
+				fixture := reportableMatrixFixture(matrix, scenario, seed)
+				for _, mode := range normalized.Modes {
+					benchmarkCases = append(benchmarkCases, MatrixCase{
+						Matrix:   matrix,
+						Scenario: scenario,
+						Seed:     seed,
+						Mode:     mode,
+						Fixture:  fixture,
+					})
 				}
-				benchmarkCase := MatrixCase{
-					Matrix:   normalized.Matrix,
-					Scenario: scenario,
-					Seed:     seed,
-					Mode:     mode,
-					Fixture:  fixture,
-				}
-				caseResult := runForegroundBenchmarkCase(
-					ctx,
-					benchmarkCase,
-					invoke,
-				)
-				report.Summary.Cases++
-				if caseResult.Status == MatrixCaseFailed {
-					report.Summary.CaseFailures++
-				}
-				report.Summary.Checkpoints += len(caseResult.Checkpoints)
-				report.Summary.DeterministicFailures +=
-					len(caseResult.DeterministicFailures)
-				report.Summary.DeterministicUnsupported +=
-					caseResult.DeterministicUnsupported
-				for _, checkpoint := range caseResult.Checkpoints {
-					switch checkpoint.TokenReduction.Status {
-					case GateFail:
-						report.Summary.TokenGateFailures++
-					}
-					switch checkpoint.Model.Status {
-					case GateFail:
-						report.Summary.ModelGateFailures++
-					case GateNotEvaluated:
-						report.Summary.ModelNotEvaluated++
-					}
-				}
-				report.Cases = append(report.Cases, caseResult)
 			}
 		}
+	}
+	report.Cases = runForegroundBenchmarkCases(
+		ctx,
+		benchmarkCases,
+		normalized.Parallelism,
+		invoke,
+	)
+	if err := ctx.Err(); err != nil {
+		return report, fmt.Errorf("foreground benchmark interrupted: %w", err)
+	}
+	for _, caseResult := range report.Cases {
+		addForegroundBenchmarkCaseSummary(&report.Summary, caseResult)
 	}
 	report.Summary.TokenGateStatus = gateStatusFromFailures(
 		report.Summary.TokenGateFailures,
@@ -342,7 +376,70 @@ func RunForegroundBenchmark(
 		report.Summary.DeterministicFailures+report.Summary.CaseFailures,
 		0,
 	)
+	finalizeForegroundBenchmarkReport(&report, normalized)
 	return report, nil
+}
+
+func runForegroundBenchmarkCases(
+	ctx context.Context,
+	benchmarkCases []MatrixCase,
+	parallelism int,
+	invoke ForegroundModelInvoker,
+) []ForegroundBenchmarkCaseResult {
+	results := make([]ForegroundBenchmarkCaseResult, len(benchmarkCases))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	workers.Add(parallelism)
+	for range parallelism {
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				results[index] = runForegroundBenchmarkCase(
+					ctx,
+					benchmarkCases[index],
+					invoke,
+				)
+			}
+		}()
+	}
+enqueue:
+	for index := range benchmarkCases {
+		select {
+		case jobs <- index:
+		case <-ctx.Done():
+			break enqueue
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	return results
+}
+
+func addForegroundBenchmarkCaseSummary(
+	summary *ForegroundBenchmarkSummary,
+	caseResult ForegroundBenchmarkCaseResult,
+) {
+	summary.Cases++
+	if caseResult.Status == MatrixCaseFailed {
+		summary.CaseFailures++
+	}
+	summary.Checkpoints += len(caseResult.Checkpoints)
+	summary.DeterministicFailures += len(caseResult.DeterministicFailures)
+	summary.DeterministicUnsupported += caseResult.DeterministicUnsupported
+	for _, checkpoint := range caseResult.Checkpoints {
+		if checkpoint.TokenReduction.Status == GateFail {
+			summary.TokenGateFailures++
+		}
+		switch checkpoint.Model.Status {
+		case GateFail:
+			summary.ModelGateFailures++
+		case GateNotEvaluated:
+			summary.ModelNotEvaluated++
+		}
+	}
 }
 
 func runForegroundBenchmarkCase(
@@ -350,26 +447,61 @@ func runForegroundBenchmarkCase(
 	benchmarkCase MatrixCase,
 	invoke ForegroundModelInvoker,
 ) ForegroundBenchmarkCaseResult {
+	evidence, err := BuildSyntheticCapsuleEvidence(benchmarkCase)
+	if err != nil {
+		return failedForegroundBenchmarkCase(benchmarkCase, err)
+	}
+	events, err := GenerateForegroundCheckpointEvents(
+		benchmarkCase,
+		evidence,
+	)
+	if err != nil {
+		return failedForegroundBenchmarkCase(benchmarkCase, err)
+	}
 	output, err := RunDeterministicMatrixCase(
 		benchmarkCase,
-		DeterministicMatrixCaseInput{},
+		DeterministicMatrixCaseInput{
+			Evidence: evidence,
+			Events:   events,
+		},
 	)
 	caseResult := ForegroundBenchmarkCaseResult{
-		Matrix:   benchmarkCase.Matrix,
-		Scenario: benchmarkCase.Scenario,
-		Seed:     benchmarkCase.Seed,
-		Mode:     benchmarkCase.Mode,
-		Status:   MatrixCaseCompleted,
+		Matrix:      benchmarkCase.Matrix,
+		Scenario:    benchmarkCase.Scenario,
+		Seed:        benchmarkCase.Seed,
+		Mode:        benchmarkCase.Mode,
+		Status:      MatrixCaseCompleted,
+		TurnResults: output.TurnResults,
 	}
 	if err != nil {
-		caseResult.Status = MatrixCaseFailed
-		caseResult.Error = err.Error()
-		return caseResult
+		return failedForegroundBenchmarkCase(benchmarkCase, err)
 	}
 
 	tokenByTurn := make(map[int]int, len(output.TurnResults))
 	for _, result := range output.TurnResults {
 		tokenByTurn[result.TurnNumber] = result.InputTokens
+		fullTokens, fullErr := fullTranscriptTokensAt(
+			benchmarkCase.Fixture,
+			result.TurnNumber,
+		)
+		if fullErr != nil {
+			caseResult.Status = MatrixCaseFailed
+			caseResult.Error = fullErr.Error()
+			return caseResult
+		}
+		caseResult.TurnTokenMeasurements = append(
+			caseResult.TurnTokenMeasurements,
+			ForegroundBenchmarkTurnTokenResult{
+				TurnNumber: result.TurnNumber,
+				TokenReduction: tokenReductionResult(
+					benchmarkCase.Matrix,
+					benchmarkCase.Mode,
+					result.TurnNumber,
+					fullTokens,
+					result.InputTokens,
+				),
+			},
+		)
 		for _, check := range result.Checks {
 			switch check.Status {
 			case DeterministicFail:
@@ -390,7 +522,7 @@ func runForegroundBenchmarkCase(
 	modelResults, err := EvaluateForegroundModelCheckpoints(
 		ctx,
 		benchmarkCase,
-		nil,
+		events,
 		invoke,
 	)
 	if err != nil {
@@ -401,6 +533,17 @@ func runForegroundBenchmarkCase(
 	modelByTurn := make(map[int]ForegroundModelCheckpointResult, len(modelResults))
 	for _, result := range modelResults {
 		modelByTurn[result.TurnNumber] = result
+	}
+	for index := range caseResult.TurnTokenMeasurements {
+		measurement := &caseResult.TurnTokenMeasurements[index]
+		modelResult, found := modelByTurn[measurement.TurnNumber]
+		if !found {
+			continue
+		}
+		usage := modelResult.TokenUsage
+		measurement.ForegroundCheckpoint = true
+		measurement.ForegroundModelStatus = modelResult.Status
+		measurement.ForegroundModelUsage = &usage
 	}
 	for _, checkpoint := range output.ModelCheckpoints {
 		fullTokens, err := fullTranscriptTokensAt(
@@ -427,7 +570,31 @@ func runForegroundBenchmarkCase(
 			},
 		)
 	}
+	caseResult.Diagnostics, err = LocalizeForegroundModelFailures(
+		ctx,
+		benchmarkCase,
+		modelResults,
+		invoke,
+	)
+	if err != nil {
+		caseResult.Status = MatrixCaseFailed
+		caseResult.Error = err.Error()
+	}
 	return caseResult
+}
+
+func failedForegroundBenchmarkCase(
+	benchmarkCase MatrixCase,
+	err error,
+) ForegroundBenchmarkCaseResult {
+	return ForegroundBenchmarkCaseResult{
+		Matrix:   benchmarkCase.Matrix,
+		Scenario: benchmarkCase.Scenario,
+		Seed:     benchmarkCase.Seed,
+		Mode:     benchmarkCase.Mode,
+		Status:   MatrixCaseFailed,
+		Error:    err.Error(),
+	}
 }
 
 func EvaluateForegroundModelCheckpoints(
@@ -449,43 +616,80 @@ func EvaluateForegroundModelCheckpoints(
 
 	results := make([]ForegroundModelCheckpointResult, 0, len(checkpoints))
 	for _, checkpoint := range checkpoints {
-		request, expectation, err := foregroundModelRequest(
+		result, err := evaluateForegroundModelCheckpoint(
+			ctx,
 			benchmarkCase,
 			checkpoint,
+			0,
+			invoke,
 		)
 		if err != nil {
 			return nil, err
 		}
-		result := ForegroundModelCheckpointResult{
-			TurnNumber:   checkpoint.TurnNumber,
-			Fixed:        checkpoint.Fixed,
-			EventReasons: append([]ForegroundCheckpointReason(nil), checkpoint.EventReasons...),
-		}
-		if invoke == nil {
-			result.Status = GateNotEvaluated
-			result.Checks = notEvaluatedModelChecks("foreground model command was not configured")
-			results = append(results, result)
-			continue
-		}
-		response, err := invoke(ctx, request)
-		if err != nil {
-			result.Status = GateNotEvaluated
-			result.Error = err.Error()
-			result.Checks = notEvaluatedModelChecks("foreground model command did not complete")
-			results = append(results, result)
-			continue
-		}
-		result.TokenUsage = ModelTokenUsage{
-			InputTokens:  response.InputTokens,
-			OutputTokens: response.OutputTokens,
-			TokenBasis:   strings.TrimSpace(response.TokenBasis),
-			Model:        strings.TrimSpace(response.Model),
-		}
-		result.Checks = evaluateModelQuality(expectation, response.Content)
-		result.Status = modelStatus(result.Checks)
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func evaluateForegroundModelCheckpoint(
+	ctx context.Context,
+	benchmarkCase MatrixCase,
+	checkpoint ForegroundModelCheckpoint,
+	diagnosticFor int,
+	invoke ForegroundModelInvoker,
+) (ForegroundModelCheckpointResult, error) {
+	request, expectation, err := foregroundModelRequest(
+		benchmarkCase,
+		checkpoint,
+	)
+	if err != nil {
+		return ForegroundModelCheckpointResult{}, err
+	}
+	request.Diagnostic = diagnosticFor > 0
+	request.DiagnosticFor = diagnosticFor
+	result := ForegroundModelCheckpointResult{
+		TurnNumber:    checkpoint.TurnNumber,
+		Fixed:         checkpoint.Fixed,
+		Diagnostic:    diagnosticFor > 0,
+		DiagnosticFor: diagnosticFor,
+		EventReasons: append(
+			[]ForegroundCheckpointReason(nil),
+			checkpoint.EventReasons...,
+		),
+	}
+	if invoke == nil {
+		result.Status = GateNotEvaluated
+		result.Checks = notEvaluatedModelChecks(
+			"foreground model command was not configured",
+		)
+		return result, nil
+	}
+	response, invokeErr := invoke(ctx, request)
+	if invokeErr != nil {
+		result.Status = GateNotEvaluated
+		result.Error = invokeErr.Error()
+		result.Checks = notEvaluatedModelChecks(
+			"foreground model command did not complete",
+		)
+		return result, nil
+	}
+	result.TokenUsage = ModelTokenUsage{
+		InputTokens:           response.InputTokens,
+		CachedInputTokens:     response.CachedInputTokens,
+		OutputTokens:          response.OutputTokens,
+		ReasoningOutputTokens: response.ReasoningOutputTokens,
+		TokenBasis:            strings.TrimSpace(response.TokenBasis),
+		Provider:              strings.TrimSpace(response.Provider),
+		Model:                 strings.TrimSpace(response.Model),
+		ModelRevision:         strings.TrimSpace(response.ModelRevision),
+		ReasoningEffort:       strings.TrimSpace(response.ReasoningEffort),
+		SamplingSeedStatus:    strings.TrimSpace(response.SamplingSeedStatus),
+		RunnerVersion:         strings.TrimSpace(response.RunnerVersion),
+		ToolDefinitionDigest:  strings.TrimSpace(response.ToolDefinitionDigest),
+	}
+	result.Checks = evaluateModelQuality(expectation, response.Content)
+	result.Status = modelStatus(result.Checks)
+	return result, nil
 }
 
 func foregroundModelRequest(
@@ -776,7 +980,7 @@ func normalizeForegroundBenchmarkOptions(
 		options.Matrix = MatrixFormal
 	}
 	switch options.Matrix {
-	case MatrixFormal, MatrixEndurance:
+	case MatrixFormal, MatrixEndurance, MatrixAll:
 	default:
 		return ForegroundBenchmarkOptions{}, fmt.Errorf(
 			"unsupported benchmark matrix %q",
@@ -791,6 +995,14 @@ func normalizeForegroundBenchmarkOptions(
 	}
 	if len(options.Modes) == 0 {
 		options.Modes = comparisonModes[:]
+	}
+	if options.Parallelism == 0 {
+		options.Parallelism = 1
+	}
+	if options.Parallelism < 1 || options.Parallelism > 16 {
+		return ForegroundBenchmarkOptions{}, fmt.Errorf(
+			"benchmark parallelism must be between 1 and 16",
+		)
 	}
 	for _, scenario := range options.Scenarios {
 		if !validReportableScenario(scenario) {

@@ -214,6 +214,10 @@ func TestSelfCheckUsesExactBoundedDocument(t *testing.T) {
 }
 
 func TestBenchmarkCommandReportsNotEvaluatedWithoutModelCommand(t *testing.T) {
+	originalFingerprint := benchmarkRepositoryFingerprint
+	benchmarkRepositoryFingerprint = func() string { return "sha256:test" }
+	t.Cleanup(func() { benchmarkRepositoryFingerprint = originalFingerprint })
+
 	var output, diagnostics bytes.Buffer
 	err := run(
 		context.Background(),
@@ -236,7 +240,7 @@ func TestBenchmarkCommandReportsNotEvaluatedWithoutModelCommand(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
 		t.Fatalf("decode benchmark output: %v", err)
 	}
-	if report.Summary.Cases != 1 || report.Summary.Checkpoints != 4 {
+	if report.Summary.Cases != 1 || report.Summary.Checkpoints != 7 {
 		t.Fatalf("benchmark summary = %+v", report.Summary)
 	}
 	if report.Summary.TokenGateStatus != benchmark.GatePass {
@@ -255,6 +259,8 @@ func TestBenchmarkCommandReportsNotEvaluatedWithoutModelCommand(t *testing.T) {
 
 func TestBenchmarkCommandRunsConfiguredModelInvoker(t *testing.T) {
 	originalInvoker := benchmarkModelInvoker
+	originalFingerprint := benchmarkRepositoryFingerprint
+	benchmarkRepositoryFingerprint = func() string { return "sha256:test" }
 	benchmarkModelInvoker = func(command string, args []string) benchmark.ForegroundModelInvoker {
 		if command != "fake-model" || len(args) != 1 || args[0] != "arg" {
 			t.Fatalf("model command = %q args %v", command, args)
@@ -263,21 +269,25 @@ func TestBenchmarkCommandRunsConfiguredModelInvoker(t *testing.T) {
 			_ context.Context,
 			request benchmark.ForegroundModelRequest,
 		) (benchmark.ForegroundModelResponse, error) {
-			identity := "0000000000000001-" + twoDigit(request.TurnNumber)
 			return benchmark.ForegroundModelResponse{
-				Content: strings.Join([]string{
-					"active requirement: stable-requirement",
-					"current focus: synthetic-progress-stable-requirement-" + identity,
-					"next action: synthetic-verify-stable-requirement-" + identity,
-				}, "\n"),
-				InputTokens:  100,
-				OutputTokens: 20,
-				TokenBasis:   "observed",
-				Model:        "fake",
+				Content:              request.RenderedInput,
+				InputTokens:          100,
+				OutputTokens:         20,
+				TokenBasis:           "observed",
+				Provider:             "fake-provider",
+				Model:                "fake",
+				ModelRevision:        "fake-v1",
+				ReasoningEffort:      "test",
+				SamplingSeedStatus:   "supported",
+				RunnerVersion:        "fake-runner/v1",
+				ToolDefinitionDigest: "fake-tools",
 			}, nil
 		}
 	}
-	t.Cleanup(func() { benchmarkModelInvoker = originalInvoker })
+	t.Cleanup(func() {
+		benchmarkModelInvoker = originalInvoker
+		benchmarkRepositoryFingerprint = originalFingerprint
+	})
 
 	var output, diagnostics bytes.Buffer
 	err := run(

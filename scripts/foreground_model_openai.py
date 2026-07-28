@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 import urllib.error
@@ -15,6 +16,7 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-5"
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_OUTPUT_TOKENS = 700
+ADAPTER_VERSION = "context-compactor/foreground-model-openai/v1"
 
 
 def main(argv: list[str]) -> int:
@@ -52,7 +54,16 @@ def main(argv: list[str]) -> int:
         "input_tokens": int(response.get("usage", {}).get("input_tokens", 0) or 0),
         "output_tokens": int(response.get("usage", {}).get("output_tokens", 0) or 0),
         "token_basis": "observed" if response.get("usage") else "not_evaluated",
+        "provider": "openai-responses-api",
         "model": str(response.get("model") or model),
+        "model_revision": str(response.get("model") or model),
+        "reasoning_effort": os.environ.get(
+            "OPENAI_REASONING_EFFORT",
+            "provider_default",
+        ),
+        "sampling_seed_status": "unsupported",
+        "runner_version": ADAPTER_VERSION,
+        "tool_definition_digest": hashlib.sha256(b"[]").hexdigest(),
     }
     json.dump(output, sys.stdout, ensure_ascii=False, separators=(",", ":"))
     sys.stdout.write("\n")
@@ -145,6 +156,9 @@ def build_prompt(request: dict) -> str:
             "You are evaluating one context-compactor benchmark checkpoint.",
             "Use only rendered_input as evidence for the answer.",
             "Metadata identifies the benchmark cell but is not evidence for the answer.",
+            "For summary input, copy last_verification as next action.",
+            "For transcript input, use the final turn's last tool activity as next action.",
+            "For compiled input, use the latest verification or test-result value as next action.",
             "Return concise plain text with exactly these labels:",
             "active requirement: <value or unknown>",
             "current focus: <value or unknown>",

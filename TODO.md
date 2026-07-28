@@ -64,7 +64,7 @@ Each item must be implemented, verified, reviewed, and committed independently.
 - [x] Verify soft-budget overflow never rejects a user turn and recovery context
       is reconciled before state-changing actions.
 - [x] Compare full transcript, summary-only, strict, and balanced modes.
-- [ ] Produce the five-seed formal 60-turn and endurance 120-turn benchmark
+- [x] Produce the five-seed formal 60-turn and endurance 120-turn benchmark
       report. Run deterministic checks on every turn; evaluate the foreground
       model at turns 10, 30, 50, and 60 in the formal matrix and turns 60, 90,
       and 120 in the endurance matrix; add event checkpoints for host

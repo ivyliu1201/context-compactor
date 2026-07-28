@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,9 +33,10 @@ var defaultLimits = compiler.BudgetLimits{
 }
 
 var (
-	currentExecutable     = os.Executable
-	managementProbe       = management.ProbeExecutable
-	benchmarkModelInvoker = commandForegroundModelInvoker
+	currentExecutable              = os.Executable
+	managementProbe                = management.ProbeExecutable
+	benchmarkModelInvoker          = commandForegroundModelInvoker
+	benchmarkRepositoryFingerprint = currentRepositoryFingerprint
 )
 
 func main() {
@@ -270,10 +274,11 @@ func runBenchmark(
 ) error {
 	flags := flag.NewFlagSet("benchmark", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
-	matrixName := flags.String("matrix", string(benchmark.MatrixFormal), "benchmark matrix: formal or endurance")
+	matrixName := flags.String("matrix", string(benchmark.MatrixFormal), "benchmark matrix: formal, endurance, or all")
 	scenarioName := flags.String("scenario", "all", "scenario: all, continuous_development, requirement_reversal, or resume")
 	seedName := flags.String("seed", "all", "seed: all or a positive integer")
 	modeName := flags.String("mode", "all", "mode: all, full_transcript, summary_only, context_compactor_strict, or context_compactor_balanced")
+	parallelism := flags.Int("parallel", 1, "independent benchmark cases to execute concurrently (1-16)")
 	modelCommand := flags.String("model-command", "", "external foreground model command; reads JSON request on stdin and writes JSON response on stdout")
 	var modelArgs stringListFlag
 	flags.Var(&modelArgs, "model-arg", "argument passed to --model-command; may be repeated")
@@ -293,6 +298,8 @@ func runBenchmark(
 	if err != nil {
 		return err
 	}
+	options.Parallelism = *parallelism
+	options.RepositoryFingerprint = benchmarkRepositoryFingerprint()
 	var invoke benchmark.ForegroundModelInvoker
 	if strings.TrimSpace(*modelCommand) != "" {
 		invoke = benchmarkModelInvoker(strings.TrimSpace(*modelCommand), []string(modelArgs))
@@ -356,8 +363,10 @@ func parseBenchmarkMatrix(value string) (benchmark.MatrixKind, error) {
 		return benchmark.MatrixFormal, nil
 	case "endurance":
 		return benchmark.MatrixEndurance, nil
+	case "all":
+		return benchmark.MatrixAll, nil
 	default:
-		return "", fmt.Errorf("benchmark matrix must be formal or endurance")
+		return "", fmt.Errorf("benchmark matrix must be formal, endurance, or all")
 	}
 }
 
@@ -438,6 +447,50 @@ func commandForegroundModelInvoker(
 		}
 		return response, nil
 	}
+}
+
+func currentRepositoryFingerprint() string {
+	rootCommand := exec.Command("git", "rev-parse", "--show-toplevel")
+	rootOutput, err := rootCommand.Output()
+	if err != nil {
+		return ""
+	}
+	root := strings.TrimSpace(string(rootOutput))
+	if root == "" {
+		return ""
+	}
+	listCommand := exec.Command(
+		"git",
+		"-C",
+		root,
+		"ls-files",
+		"-z",
+		"--cached",
+		"--others",
+		"--exclude-standard",
+	)
+	listOutput, err := listCommand.Output()
+	if err != nil {
+		return ""
+	}
+	paths := strings.Split(string(listOutput), "\x00")
+	sort.Strings(paths)
+	hash := sha256.New()
+	for _, relativePath := range paths {
+		if relativePath == "" ||
+			strings.HasPrefix(relativePath, "benchmark-results/") {
+			continue
+		}
+		content, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(relativePath)))
+		if readErr != nil {
+			return ""
+		}
+		_, _ = io.WriteString(hash, relativePath)
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write(content)
+		_, _ = hash.Write([]byte{0})
+	}
+	return fmt.Sprintf("sha256:%x", hash.Sum(nil))
 }
 
 func runSelfCheck(args []string, output io.Writer) error {
