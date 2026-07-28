@@ -16,12 +16,12 @@ import (
 	"strings"
 	"time"
 
-	"context-compactor/internal/benchmark"
-	"context-compactor/internal/compiler"
-	"context-compactor/internal/journal"
-	"context-compactor/internal/management"
-	"context-compactor/internal/protocol"
-	compactruntime "context-compactor/internal/runtime"
+	"github.com/ivyliu1201/context-compactor/internal/benchmark"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/management"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
+	compactruntime "github.com/ivyliu1201/context-compactor/internal/runtime"
 )
 
 const defaultRefreshLease = 2 * time.Minute

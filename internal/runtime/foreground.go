@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"context-compactor/internal/adapter"
-	"context-compactor/internal/compiler"
-	"context-compactor/internal/reducer"
+	"github.com/ivyliu1201/context-compactor/internal/adapter"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
 // VerifiedCapsuleProvider supplies an immutable verified capsule snapshot for

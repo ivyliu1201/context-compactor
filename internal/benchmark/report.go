@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
 )
 
 const (

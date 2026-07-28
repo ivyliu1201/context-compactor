@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 type LifecycleStatus string

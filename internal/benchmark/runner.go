@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"context-compactor/internal/compiler"
-	"context-compactor/internal/journal"
-	"context-compactor/internal/privacy"
-	"context-compactor/internal/runtime"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/privacy"
+	"github.com/ivyliu1201/context-compactor/internal/runtime"
 )
 
 type DeterministicStatus string

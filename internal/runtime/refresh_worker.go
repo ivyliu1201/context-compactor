@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"context-compactor/internal/compiler"
-	"context-compactor/internal/journal"
-	"context-compactor/internal/reducer"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
 type RefreshJobQueue interface {

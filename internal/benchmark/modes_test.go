@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
 )
 
 func TestCompareModesProducesEveryModeAtEveryCheckpoint(t *testing.T) {

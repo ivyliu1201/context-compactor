@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"context-compactor/internal/protocol"
-	"context-compactor/internal/reducer"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
 func TestRecoveryReconciliationGateRequiresExactLookupBeforeStateChange(t *testing.T) {

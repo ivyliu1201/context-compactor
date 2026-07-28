@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"context-compactor/internal/benchmark"
-	"context-compactor/internal/journal"
-	"context-compactor/internal/management"
+	"github.com/ivyliu1201/context-compactor/internal/benchmark"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/management"
 )
 
 func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.T) {

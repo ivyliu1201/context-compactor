@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
 )
 
 type TranscriptCompactionOwner string

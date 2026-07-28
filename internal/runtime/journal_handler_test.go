@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"context-compactor/internal/journal"
-	"context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 func TestJournalHandlerExtractsValidatesAndAppends(t *testing.T) {

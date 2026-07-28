@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"context-compactor/internal/privacy"
+	"github.com/ivyliu1201/context-compactor/internal/privacy"
 )
 
 const (

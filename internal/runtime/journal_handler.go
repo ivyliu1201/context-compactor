@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"context-compactor/internal/journal"
-	"context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 // Extraction is the bounded durable candidate produced from one transient

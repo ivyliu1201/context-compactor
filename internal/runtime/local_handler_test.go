@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	coreadapter "context-compactor/internal/adapter"
-	"context-compactor/internal/journal"
-	"context-compactor/internal/protocol"
+	coreadapter "github.com/ivyliu1201/context-compactor/internal/adapter"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 func TestLocalHookHandlerRunsAtomicPipelineAndDurablyEnqueuesRefresh(t *testing.T) {

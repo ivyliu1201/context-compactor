@@ -1,4 +1,4 @@
-module context-compactor
+module github.com/ivyliu1201/context-compactor
 
 go 1.26.0
 

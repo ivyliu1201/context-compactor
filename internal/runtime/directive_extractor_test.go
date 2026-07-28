@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 func TestDirectiveExtractorPersistsOnlyExplicitBoundedDirectives(t *testing.T) {

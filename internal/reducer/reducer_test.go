@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 var reducerTestTime = time.Date(2026, time.July, 14, 8, 0, 0, 0, time.UTC)

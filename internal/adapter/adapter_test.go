@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
 )
 
 func TestNegotiatePrefersHostNativeTranscriptCompaction(t *testing.T) {

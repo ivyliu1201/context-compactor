@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	coreadapter "context-compactor/internal/adapter"
-	"context-compactor/internal/protocol"
+	coreadapter "github.com/ivyliu1201/context-compactor/internal/adapter"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 const HostID = "claude-code"

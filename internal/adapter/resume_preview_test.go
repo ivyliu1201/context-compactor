@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
 )
 
 func TestBuildResumePreviewEmitsOnlyFourFields(t *testing.T) {

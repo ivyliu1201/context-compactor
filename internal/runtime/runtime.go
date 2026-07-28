@@ -9,10 +9,10 @@ import (
 	"io"
 	"time"
 
-	coreadapter "context-compactor/internal/adapter"
-	"context-compactor/internal/adapter/claude"
-	"context-compactor/internal/adapter/codex"
-	"context-compactor/internal/protocol"
+	coreadapter "github.com/ivyliu1201/context-compactor/internal/adapter"
+	"github.com/ivyliu1201/context-compactor/internal/adapter/claude"
+	"github.com/ivyliu1201/context-compactor/internal/adapter/codex"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 type Host string

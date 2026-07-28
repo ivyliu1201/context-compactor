@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"context-compactor/internal/reducer"
+	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
 var (

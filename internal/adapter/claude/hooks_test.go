@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 var hookTestTime = time.Date(2026, 7, 22, 7, 45, 0, 0, time.UTC)

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"context-compactor/internal/reducer"
+	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
 const CompilerPolicyVersion = "context-compactor/compiler/v1"

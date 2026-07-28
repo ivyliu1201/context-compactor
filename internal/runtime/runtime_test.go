@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 var runtimeTestTime = time.Date(2026, 7, 23, 2, 30, 0, 0, time.UTC)

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"context-compactor/internal/protocol"
-	"context-compactor/internal/reducer"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
 func TestRenderPendingContextSeparatesCapsuleAndDeltaDeterministically(t *testing.T) {

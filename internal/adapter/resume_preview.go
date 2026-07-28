@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
 )
 
 const (

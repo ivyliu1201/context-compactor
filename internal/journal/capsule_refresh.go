@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"context-compactor/internal/compiler"
-	"context-compactor/internal/privacy"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/privacy"
 )
 
 type RefreshTrigger string

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"context-compactor/internal/compiler"
-	"context-compactor/internal/protocol"
-	"context-compactor/internal/reducer"
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
 func TestRefreshScheduleDoesNotBlockForegroundFallback(t *testing.T) {

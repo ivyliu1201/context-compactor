@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"context-compactor/internal/privacy"
-	"context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/privacy"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 const (

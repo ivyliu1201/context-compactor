@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"context-compactor/internal/adapter"
-	"context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/adapter"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
 )
 
 func TestResumeScenarioPreviewBlocksStateChangeUntilConfirmation(t *testing.T) {
