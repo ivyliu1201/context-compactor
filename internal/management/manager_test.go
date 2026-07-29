@@ -11,6 +11,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ivyliu1201/context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
+	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
 func TestManagerInstallDoctorStatusAndUninstallPreserveOtherHooks(t *testing.T) {
@@ -140,6 +145,103 @@ func TestManagerInstallDynamicCodexProjectRootOmitsFixedRoot(t *testing.T) {
 	}
 	if _, err := manager.Uninstall(ctx, []Host{HostCodex}); err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
+	}
+}
+
+func TestManagerStatusAndDoctorReportWorkerNotRunningAndRetryFailure(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	executable := testExecutable(t, root)
+	manager := testManager(root, executable, func(context.Context, string) error {
+		return nil
+	})
+	if _, err := manager.Install(ctx, []Host{HostCodex}); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+
+	store, err := journal.Open(ctx, journal.OpenOptions{ProjectRoot: root})
+	if err != nil {
+		t.Fatalf("journal.Open() error = %v", err)
+	}
+	view, err := reducer.Build(nil)
+	if err != nil {
+		t.Fatalf("reducer.Build() error = %v", err)
+	}
+	enqueuedAt := manager.Now().Add(-time.Minute)
+	if _, err := store.EnqueueCapsuleRefresh(ctx, journal.CapsuleRefreshRequest{
+		RepositoryScope: "repository",
+		Trigger:         journal.RefreshAfterTurn,
+		Source: journal.CapsuleRefreshSource{
+			EventSeq:     1,
+			OperationSeq: view.LastOperationSeq,
+			ViewDigest:   view.Digest,
+		},
+		Configuration: journal.RefreshConfiguration{
+			PrivacyMode:           protocol.PrivacyBalanced,
+			Limits:                compiler.BudgetLimits{Target: 256, Trigger: 512, Hard: 1024},
+			CompilerPolicyVersion: compiler.CompilerPolicyVersion,
+			TokenCounterIdentity:  compiler.RenderCounterIdentity,
+		},
+		EnqueuedAt: enqueuedAt,
+	}); err != nil {
+		t.Fatalf("EnqueueCapsuleRefresh() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Store.Close() error = %v", err)
+	}
+
+	status, err := manager.Status(ctx, []Host{HostCodex})
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if len(status) != 1 ||
+		status[0].Runtime.PendingJobs != 1 ||
+		status[0].Runtime.Attempts != 0 ||
+		status[0].Runtime.PendingAttempts != 0 ||
+		status[0].Runtime.OldestPendingAgeSeconds != 60 ||
+		!status[0].Runtime.WorkerNotRunning ||
+		!containsIssue(status[0].Issues, "worker_not_running") {
+		t.Fatalf("worker-not-running status = %+v", status)
+	}
+	doctor, err := manager.Doctor(ctx, []Host{HostCodex})
+	if err == nil || len(doctor) != 1 || doctor[0].State != "unhealthy" {
+		t.Fatalf("worker-not-running doctor = %+v, error = %v", doctor, err)
+	}
+
+	store, err = journal.Open(ctx, journal.OpenOptions{ProjectRoot: root})
+	if err != nil {
+		t.Fatalf("reopen journal: %v", err)
+	}
+	job, found, err := store.ClaimNextCapsuleRefresh(
+		ctx,
+		manager.Now(),
+		time.Minute,
+	)
+	if err != nil || !found {
+		t.Fatalf("ClaimNextCapsuleRefresh() = %+v, found %t, error %v", job, found, err)
+	}
+	if err := store.RetryCapsuleRefresh(ctx, job.ID, journal.CapsuleRefreshFailure{
+		Reason:    "snapshot unavailable",
+		FailedAt:  manager.Now(),
+		RetryAt:   manager.Now().Add(time.Minute),
+		Retryable: true,
+	}); err != nil {
+		t.Fatalf("RetryCapsuleRefresh() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close retry journal: %v", err)
+	}
+
+	status, err = manager.Status(ctx, []Host{HostCodex})
+	if err != nil {
+		t.Fatalf("failed-job Status() error = %v", err)
+	}
+	if status[0].Runtime.PendingJobs != 1 ||
+		status[0].Runtime.FailedJobs != 1 ||
+		status[0].Runtime.Attempts != 1 ||
+		status[0].Runtime.PendingAttempts != 1 ||
+		status[0].Runtime.FailedReason != "snapshot unavailable" {
+		t.Fatalf("failed-job status = %+v", status[0].Runtime)
 	}
 }
 
@@ -310,6 +412,15 @@ func testExecutable(t *testing.T, root string) string {
 		t.Fatalf("WriteFile() executable error = %v", err)
 	}
 	return path
+}
+
+func containsIssue(issues []string, want string) bool {
+	for _, issue := range issues {
+		if issue == want {
+			return true
+		}
+	}
+	return false
 }
 
 func writeTestJSON(t *testing.T, path string, value any) {

@@ -3,8 +3,9 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"path/filepath"
+	"io"
 	"strings"
+	"time"
 
 	coreadapter "github.com/ivyliu1201/context-compactor/internal/adapter"
 	"github.com/ivyliu1201/context-compactor/internal/compiler"
@@ -17,10 +18,14 @@ const DefaultRepositoryScope = "repository"
 
 type LocalHookHandler struct {
 	ProjectRoot     string
+	DatabasePath    string
 	RepositoryScope string
 	PrivacyMode     protocol.PrivacyMode
 	Extractor       Extractor
 	Limits          compiler.BudgetLimits
+	Launcher        WorkerLauncher
+	RefreshLease    time.Duration
+	Diagnostics     io.Writer
 }
 
 // Handle executes the complete local hook pipeline. Complete event content is
@@ -38,6 +43,12 @@ func (handler LocalHookHandler) Handle(
 	}
 	if handler.Extractor == nil {
 		return Result{}, fmt.Errorf("local hook extractor is required")
+	}
+	if handler.Launcher == nil {
+		return Result{}, fmt.Errorf("local hook worker launcher is required")
+	}
+	if handler.RefreshLease <= 0 {
+		return Result{}, fmt.Errorf("local hook refresh lease must be positive")
 	}
 	if err := validatePrivacyMode(handler.PrivacyMode); err != nil {
 		return Result{}, err
@@ -63,7 +74,10 @@ func (handler LocalHookHandler) Handle(
 		scope = DefaultRepositoryScope
 	}
 
-	store, err := journal.Open(ctx, journal.OpenOptions{ProjectRoot: root})
+	store, err := journal.Open(ctx, journal.OpenOptions{
+		ProjectRoot: root,
+		Path:        handler.DatabasePath,
+	})
 	if err != nil {
 		return Result{}, fmt.Errorf("open local journal: %w", err)
 	}
@@ -104,13 +118,47 @@ func (handler LocalHookHandler) handleWithStore(
 			OperationSeq: snapshot.View.LastOperationSeq,
 			ViewDigest:   snapshot.View.Digest,
 		},
+		Configuration: journal.RefreshConfiguration{
+			PrivacyMode:           handler.PrivacyMode,
+			Limits:                handler.Limits,
+			CompilerPolicyVersion: compiler.CompilerPolicyVersion,
+			TokenCounterIdentity:  compiler.RenderCounterIdentity,
+		},
 		EnqueuedAt: event.OccurredAt,
 	}); err != nil {
 		return Result{}, fmt.Errorf("durably enqueue capsule refresh: %w", err)
 	}
+	handler.recordMetric(
+		ctx,
+		store,
+		journal.RuntimeMetricHookEvents,
+		1,
+		event.OccurredAt,
+	)
+	if _, err := handler.Launcher.Launch(ctx, WorkerLaunchRequest{
+		Store:           store,
+		ProjectRoot:     store.ProjectRoot(),
+		DatabasePath:    store.Path(),
+		RepositoryScope: scope,
+		PrivacyMode:     handler.PrivacyMode,
+		Limits:          handler.Limits,
+		RefreshLease:    handler.RefreshLease,
+	}); err != nil {
+		handler.writeDiagnostic("detached refresh worker launch failed: " + err.Error())
+	}
 
 	result := Result{TranscriptCompactionOwner: owner}
 	if !eventSupportsAdditionalContext(event.Kind) {
+		return result, nil
+	}
+	if !hasActiveMemory(snapshot.View) {
+		handler.recordMetric(
+			ctx,
+			store,
+			journal.RuntimeMetricEmptyContextSuppressions,
+			1,
+			event.OccurredAt,
+		)
 		return result, nil
 	}
 	foreground, err := handler.compileForeground(
@@ -124,6 +172,30 @@ func (handler LocalHookHandler) handleWithStore(
 		return Result{}, err
 	}
 	result.AdditionalContext = foreground.Text
+	if result.AdditionalContext == "" {
+		handler.recordMetric(
+			ctx,
+			store,
+			journal.RuntimeMetricEmptyContextSuppressions,
+			1,
+			event.OccurredAt,
+		)
+		return result, nil
+	}
+	handler.recordMetric(
+		ctx,
+		store,
+		journal.RuntimeMetricContextInjections,
+		1,
+		event.OccurredAt,
+	)
+	handler.recordMetric(
+		ctx,
+		store,
+		journal.RuntimeMetricInjectedContextBytes,
+		int64(len(result.AdditionalContext)),
+		event.OccurredAt,
+	)
 	result.RequiresRetrieval = foreground.RequiresRetrieval
 	result.RequiredLookupIDs = append(
 		[]string(nil),
@@ -188,11 +260,35 @@ func (handler LocalHookHandler) projectRoot(eventCWD string) (string, error) {
 	if root == "" {
 		root = eventCWD
 	}
-	absolute, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve project root: %w", err)
+	return journal.CanonicalProjectRoot(root)
+}
+
+func (handler LocalHookHandler) recordMetric(
+	ctx context.Context,
+	store *journal.Store,
+	metric string,
+	delta int64,
+	at time.Time,
+) {
+	if err := store.RecordRuntimeMetric(ctx, metric, delta, at); err != nil {
+		handler.writeDiagnostic("record runtime metric failed: " + err.Error())
 	}
-	return filepath.Clean(absolute), nil
+}
+
+func (handler LocalHookHandler) writeDiagnostic(message string) {
+	if handler.Diagnostics == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(handler.Diagnostics, "context-compactor:", message)
+}
+
+func hasActiveMemory(view reducer.View) bool {
+	for _, record := range view.Records {
+		if record.Lifecycle == reducer.LifecycleActive {
+			return true
+		}
+	}
+	return false
 }
 
 func eventTranscriptOwner(

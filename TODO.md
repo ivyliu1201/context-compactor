@@ -51,7 +51,15 @@ Each item must be implemented, verified, reviewed, and committed independently.
       the foreground response or allowing stale jobs to overwrite newer state.
 - [x] Add an executable hook runtime that connects Codex and Claude hook input
       to privacy filtering, validated journal operations, foreground context,
-      and durable background refresh handoff.
+      and durable refresh enqueue.
+- [x] Close the executable refresh lifecycle with additive Schema v4 job state,
+      a detached per-repository drain worker, single-flight lease, retry and
+      health diagnostics, empty-output suppression, capsule publication, and
+      next-hook injection.
+- [ ] Extract only explicit, deterministic natural-language project-memory
+      instructions and preserve validation traceability.
+- [ ] Verify install-to-injection behavior from a fresh project without
+      manually invoking the refresh worker.
 - [x] Add install, uninstall, status, and doctor commands.
 
 ## 5. Benchmark suite

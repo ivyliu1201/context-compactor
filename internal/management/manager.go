@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ivyliu1201/context-compactor/internal/journal"
 )
 
 const (
@@ -37,6 +39,8 @@ type ProbeFunc func(context.Context, string) error
 
 type Manager struct {
 	ProjectRoot             string
+	RuntimeProjectRoot      string
+	RuntimeDatabasePath     string
 	DynamicCodexProjectRoot bool
 	Executable              string
 	Now                     func() time.Time
@@ -44,14 +48,41 @@ type Manager struct {
 }
 
 type Report struct {
-	Host                  Host     `json:"host"`
-	Installed             bool     `json:"installed"`
-	DefinitionHealthy     bool     `json:"definition_healthy"`
-	ExecutableHealthy     bool     `json:"executable_healthy"`
-	State                 string   `json:"state"`
-	ManualTrustRequired   bool     `json:"manual_trust_required"`
-	HostActivationUnknown bool     `json:"host_activation_unknown"`
-	Issues                []string `json:"issues"`
+	Host                  Host          `json:"host"`
+	Installed             bool          `json:"installed"`
+	DefinitionHealthy     bool          `json:"definition_healthy"`
+	ExecutableHealthy     bool          `json:"executable_healthy"`
+	State                 string        `json:"state"`
+	ManualTrustRequired   bool          `json:"manual_trust_required"`
+	HostActivationUnknown bool          `json:"host_activation_unknown"`
+	Issues                []string      `json:"issues"`
+	Runtime               RuntimeReport `json:"runtime"`
+}
+
+type RuntimeReport struct {
+	Initialized              bool   `json:"initialized"`
+	SchemaVersion            int    `json:"schema_version"`
+	Events                   int64  `json:"events"`
+	PendingJobs              int64  `json:"pending_jobs"`
+	ProcessingJobs           int64  `json:"processing_jobs"`
+	ProcessedJobs            int64  `json:"processed_jobs"`
+	PublishedJobs            int64  `json:"published_jobs"`
+	DiscardedJobs            int64  `json:"discarded_jobs"`
+	FailedJobs               int64  `json:"failed_jobs"`
+	Attempts                 int64  `json:"attempts"`
+	PendingAttempts          int64  `json:"pending_attempts"`
+	Operations               int64  `json:"operations"`
+	Records                  int64  `json:"records"`
+	PublishedCapsules        int64  `json:"published_capsules"`
+	OldestPendingAgeSeconds  int64  `json:"oldest_pending_age_seconds"`
+	WorkerStarted            bool   `json:"worker_started"`
+	WorkerRunning            bool   `json:"worker_running"`
+	WorkerState              string `json:"worker_state,omitempty"`
+	FailedReason             string `json:"failed_reason,omitempty"`
+	ContextInjections        int64  `json:"context_injections"`
+	InjectedContextBytes     int64  `json:"injected_context_bytes"`
+	EmptyContextSuppressions int64  `json:"empty_context_suppressions"`
+	WorkerNotRunning         bool   `json:"worker_not_running"`
 }
 
 type manifest struct {
@@ -69,6 +100,8 @@ type hostInstalled struct {
 
 type managerState struct {
 	root                    string
+	runtimeRoot             string
+	runtimeDatabasePath     string
 	dynamicCodexProjectRoot bool
 	executable              string
 	now                     time.Time
@@ -225,7 +258,7 @@ func (manager Manager) Status(
 	if err != nil {
 		return nil, err
 	}
-	return state.status(selected, current), nil
+	return state.status(ctx, selected, current), nil
 }
 
 func (manager Manager) Doctor(
@@ -271,6 +304,14 @@ func (manager Manager) validate(
 	if !info.IsDir() {
 		return managerState{}, nil, fmt.Errorf("project root must be a directory")
 	}
+	runtimeRoot := strings.TrimSpace(manager.RuntimeProjectRoot)
+	if runtimeRoot == "" {
+		runtimeRoot = root
+	}
+	runtimeRoot, err = journal.CanonicalProjectRoot(runtimeRoot)
+	if err != nil {
+		return managerState{}, nil, fmt.Errorf("resolve runtime project root: %w", err)
+	}
 	selected, err := normalizeHosts(hosts)
 	if err != nil {
 		return managerState{}, nil, err
@@ -281,6 +322,9 @@ func (manager Manager) validate(
 	}
 	if requireExecutable && now.IsZero() {
 		return managerState{}, nil, fmt.Errorf("management clock is required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
 	probe := manager.Probe
 	if probe == nil {
@@ -295,6 +339,8 @@ func (manager Manager) validate(
 	}
 	return managerState{
 		root:                    filepath.Clean(root),
+		runtimeRoot:             runtimeRoot,
+		runtimeDatabasePath:     manager.RuntimeDatabasePath,
 		dynamicCodexProjectRoot: manager.DynamicCodexProjectRoot,
 		executable:              executable,
 		now:                     now,
@@ -303,6 +349,7 @@ func (manager Manager) validate(
 }
 
 func (state managerState) status(
+	ctx context.Context,
 	hosts []Host,
 	current manifest,
 ) []Report {
@@ -368,7 +415,81 @@ func (state managerState) status(
 		}
 		reports = append(reports, report)
 	}
+	state.attachRuntimeHealth(ctx, reports)
 	return reports
+}
+
+func (state managerState) attachRuntimeHealth(
+	ctx context.Context,
+	reports []Report,
+) {
+	health, err := journal.InspectRuntimeHealth(
+		ctx,
+		journal.OpenOptions{
+			ProjectRoot: state.runtimeRoot,
+			Path:        state.runtimeDatabasePath,
+		},
+		state.now,
+	)
+	if err != nil {
+		for index := range reports {
+			reports[index].Issues = append(
+				reports[index].Issues,
+				"runtime health is unavailable",
+			)
+		}
+		return
+	}
+	runtimeReport := runtimeReportFromHealth(health)
+	for index := range reports {
+		reports[index].Runtime = runtimeReport
+		if health.Initialized && health.SchemaVersion < 4 {
+			reports[index].Issues = append(
+				reports[index].Issues,
+				"runtime schema upgrade is required",
+			)
+		}
+		if health.WorkerNotRunning {
+			reports[index].Issues = append(
+				reports[index].Issues,
+				"worker_not_running",
+			)
+		}
+		if health.FailedJobs > 0 {
+			reports[index].Issues = append(
+				reports[index].Issues,
+				"one or more refresh jobs failed and remain retryable",
+			)
+		}
+	}
+}
+
+func runtimeReportFromHealth(health journal.RuntimeHealth) RuntimeReport {
+	return RuntimeReport{
+		Initialized:              health.Initialized,
+		SchemaVersion:            health.SchemaVersion,
+		Events:                   health.Events,
+		PendingJobs:              health.PendingJobs,
+		ProcessingJobs:           health.ProcessingJobs,
+		ProcessedJobs:            health.ProcessedJobs,
+		PublishedJobs:            health.PublishedJobs,
+		DiscardedJobs:            health.DiscardedJobs,
+		FailedJobs:               health.FailedJobs,
+		Attempts:                 health.Attempts,
+		PendingAttempts:          health.PendingAttempts,
+		Operations:               health.Operations,
+		Records:                  health.Records,
+		PublishedCapsules:        health.PublishedCapsules,
+		OldestPendingAgeSeconds:  int64(health.OldestPendingAge / time.Second),
+		WorkerStarted:            health.WorkerStarted,
+		WorkerRunning:            health.WorkerRunning,
+		WorkerState:              health.WorkerState,
+		FailedReason:             health.FailedReason,
+		ContextInjections:        health.ContextInjections,
+		InjectedContextBytes:     health.InjectedContextBytes,
+		EmptyContextSuppressions: health.EmptyContextSuppressions,
+		WorkerNotRunning:         health.WorkerNotRunning,
+	}
 }
 
 func (state managerState) doctor(
@@ -376,10 +497,24 @@ func (state managerState) doctor(
 	hosts []Host,
 	current manifest,
 ) ([]Report, error) {
-	reports := state.status(hosts, current)
+	reports := state.status(ctx, hosts, current)
 	healthy := true
 	for index := range reports {
 		report := &reports[index]
+		runtimeUnavailable := false
+		for _, issue := range report.Issues {
+			if issue == "runtime health is unavailable" {
+				runtimeUnavailable = true
+				break
+			}
+		}
+		if runtimeUnavailable ||
+			report.Runtime.WorkerNotRunning ||
+			(report.Runtime.Initialized && report.Runtime.SchemaVersion < 4) ||
+			report.Runtime.FailedJobs > 0 {
+			report.State = "unhealthy"
+			healthy = false
+		}
 		installed, found := current.Hosts[report.Host]
 		if !found {
 			healthy = false

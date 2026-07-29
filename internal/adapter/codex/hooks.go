@@ -84,22 +84,15 @@ func DecodeHook(reader io.Reader, occurredAt time.Time) (DecodedHook, error) {
 	return decoded, nil
 }
 
-// WriteOutput writes the JSON object Codex expects on hook stdout. Only
-// SessionStart, SubagentStart, and UserPromptSubmit support additionalContext.
+// WriteOutput writes only a non-empty additionalContext response. A successful
+// hook with no verified memory leaves stdout completely empty.
 func WriteOutput(writer io.Writer, eventName HookEventName, additionalContext string) error {
 	if writer == nil {
 		return fmt.Errorf("Codex hook output writer is required")
 	}
 
-	output := hookOutput{Continue: true}
 	switch eventName {
 	case EventSessionStart, EventSubagentStart, EventUserPromptSubmit:
-		if additionalContext != "" {
-			output.HookSpecificOutput = &hookSpecificOutput{
-				HookEventName:     eventName,
-				AdditionalContext: additionalContext,
-			}
-		}
 	case EventPreCompact, EventPostCompact:
 		if additionalContext != "" {
 			return fmt.Errorf("Codex %s hook does not support additional context", eventName)
@@ -107,7 +100,17 @@ func WriteOutput(writer io.Writer, eventName HookEventName, additionalContext st
 	default:
 		return fmt.Errorf("unsupported Codex hook event %q", eventName)
 	}
+	if additionalContext == "" {
+		return nil
+	}
 
+	output := hookOutput{
+		Continue: true,
+		HookSpecificOutput: &hookSpecificOutput{
+			HookEventName:     eventName,
+			AdditionalContext: additionalContext,
+		},
+	}
 	if err := json.NewEncoder(writer).Encode(output); err != nil {
 		return fmt.Errorf("encode Codex %s hook output: %w", eventName, err)
 	}

@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,9 +17,59 @@ import (
 	"github.com/ivyliu1201/context-compactor/internal/benchmark"
 	"github.com/ivyliu1201/context-compactor/internal/journal"
 	"github.com/ivyliu1201/context-compactor/internal/management"
+	compactruntime "github.com/ivyliu1201/context-compactor/internal/runtime"
 )
 
+func TestMain(testMain *testing.M) {
+	if len(os.Args) > 1 && isTestCLICommand(os.Args[1]) {
+		err := run(
+			context.Background(),
+			os.Args[1:],
+			os.Stdin,
+			os.Stdout,
+			os.Stderr,
+			func() time.Time { return time.Now().UTC() },
+		)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(testMain.Run())
+}
+
+func isTestCLICommand(value string) bool {
+	switch value {
+	case "hook",
+		"refresh-worker",
+		"install",
+		"uninstall",
+		"status",
+		"doctor",
+		"self-check",
+		"benchmark":
+		return true
+	default:
+		return false
+	}
+}
+
 func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.T) {
+	originalLauncherFactory := hookWorkerLauncherFactory
+	hookWorkerLauncherFactory = func(
+		io.Writer,
+		func() time.Time,
+	) compactruntime.WorkerLauncher {
+		return compactruntime.WorkerLauncherFunc(func(
+			context.Context,
+			compactruntime.WorkerLaunchRequest,
+		) (compactruntime.WorkerLaunchResult, error) {
+			return compactruntime.WorkerLaunchResult{Launched: true}, nil
+		})
+	}
+	t.Cleanup(func() { hookWorkerLauncherFactory = originalLauncherFactory })
+
 	now := time.Date(2026, 7, 23, 8, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name string
@@ -117,6 +170,161 @@ func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.
 			}
 		})
 	}
+}
+
+func TestExecutableHookAutomaticallyDrainsPublishesAndInjectsNextTurn(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "project root with spaces")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("create project root: %v", err)
+	}
+	firstPayload := marshalHookPayload(t, map[string]any{
+		"session_id":      "phase1-session",
+		"turn_id":         "phase1-turn-1",
+		"transcript_path": nil,
+		"cwd":             root,
+		"hook_event_name": "UserPromptSubmit",
+		"model":           "phase1-test-model",
+		"permission_mode": "default",
+		"prompt":          "[context-compactor] task: Prove detached worker closure.",
+	})
+	hookStartedAt := time.Now()
+	firstOutput, firstDiagnostics, firstDuration, err := runTestCLI(
+		firstPayload,
+		"hook",
+		"--host",
+		"codex",
+		"--project-root",
+		root,
+	)
+	if err != nil {
+		t.Fatalf(
+			"first hook subprocess error = %v, diagnostics = %q",
+			err,
+			firstDiagnostics,
+		)
+	}
+	if firstDiagnostics != "" {
+		t.Fatalf("first hook diagnostics = %q", firstDiagnostics)
+	}
+	firstContext := decodeCodexContext(t, firstOutput)
+	if !strings.Contains(firstContext, "Prove detached worker closure.") {
+		t.Fatalf("first additionalContext = %q", firstContext)
+	}
+	if firstDuration >= 10*time.Second {
+		t.Fatalf("first hook duration = %s, want detached foreground return", firstDuration)
+	}
+
+	firstHealth := waitForRuntimeHealth(t, root, func(health journal.RuntimeHealth) bool {
+		return health.PendingJobs == 0 &&
+			health.ProcessingJobs == 0 &&
+			health.ProcessedJobs == 1 &&
+			health.PublishedJobs == 1 &&
+			health.Attempts == 1 &&
+			health.PublishedCapsules == 1 &&
+			health.WorkerStarted &&
+			!health.WorkerRunning &&
+			health.WorkerState == "idle"
+	})
+	firstPublishLatency := time.Since(hookStartedAt)
+
+	nextPayload := marshalHookPayload(t, map[string]any{
+		"session_id":      "phase1-session",
+		"transcript_path": nil,
+		"cwd":             root,
+		"hook_event_name": "SessionStart",
+		"model":           "phase1-test-model",
+		"permission_mode": "default",
+		"source":          "resume",
+	})
+	nextOutput, nextDiagnostics, _, err := runTestCLI(
+		nextPayload,
+		"hook",
+		"--host",
+		"codex",
+		"--project-root",
+		root,
+	)
+	if err != nil {
+		t.Fatalf(
+			"next hook subprocess error = %v, diagnostics = %q",
+			err,
+			nextDiagnostics,
+		)
+	}
+	if nextDiagnostics != "" {
+		t.Fatalf("next hook diagnostics = %q", nextDiagnostics)
+	}
+	nextContext := decodeCodexContext(t, nextOutput)
+	if !strings.Contains(nextContext, "Prove detached worker closure.") {
+		t.Fatalf("next additionalContext = %q", nextContext)
+	}
+
+	finalHealth := waitForRuntimeHealth(t, root, func(health journal.RuntimeHealth) bool {
+		return health.Events == 2 &&
+			health.PendingJobs == 0 &&
+			health.ProcessingJobs == 0 &&
+			health.ProcessedJobs == 2 &&
+			health.PublishedJobs == 2 &&
+			health.DiscardedJobs == 0 &&
+			health.Attempts == 2 &&
+			health.Operations == 1 &&
+			health.Records == 1 &&
+			health.PublishedCapsules == 1 &&
+			health.WorkerState == "idle"
+	})
+	t.Logf(
+		"phase1_evidence events=%d pending=%d processed=%d failed=%d attempts=%d operations=%d records=%d published_capsules=%d discarded_jobs=%d first_publish_latency=%s injected_bytes=%d first_hook_duration=%s first_worker_state=%s",
+		finalHealth.Events,
+		finalHealth.PendingJobs,
+		finalHealth.ProcessedJobs,
+		finalHealth.FailedJobs,
+		finalHealth.Attempts,
+		finalHealth.Operations,
+		finalHealth.Records,
+		finalHealth.PublishedCapsules,
+		finalHealth.DiscardedJobs,
+		firstPublishLatency,
+		finalHealth.InjectedContextBytes,
+		firstDuration,
+		firstHealth.WorkerState,
+	)
+}
+
+func TestExecutableHookSuppressesEmptyContextWithoutStdout(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "empty project with spaces")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("create project root: %v", err)
+	}
+	payload := marshalHookPayload(t, map[string]any{
+		"session_id":      "empty-session",
+		"transcript_path": nil,
+		"cwd":             root,
+		"hook_event_name": "SessionStart",
+		"model":           "phase1-test-model",
+		"permission_mode": "default",
+		"source":          "startup",
+	})
+	output, diagnostics, _, err := runTestCLI(
+		payload,
+		"hook",
+		"--host",
+		"codex",
+		"--project-root",
+		root,
+	)
+	if err != nil {
+		t.Fatalf("empty hook subprocess error = %v, diagnostics = %q", err, diagnostics)
+	}
+	if len(output) != 0 {
+		t.Fatalf("empty hook stdout = %q, want zero bytes", output)
+	}
+	waitForRuntimeHealth(t, root, func(health journal.RuntimeHealth) bool {
+		return health.PendingJobs == 0 &&
+			health.ProcessingJobs == 0 &&
+			health.ProcessedJobs == 1 &&
+			health.EmptyContextSuppressions == 1 &&
+			health.WorkerState == "idle"
+	})
 }
 
 func TestExecutableHookRejectsUnknownHostWithoutWritingStdout(t *testing.T) {
@@ -368,6 +576,79 @@ func runManagementCommand(
 		t.Fatalf("decode %s output: %v", args[0], err)
 	}
 	return decoded
+}
+
+func marshalHookPayload(t *testing.T, payload map[string]any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal(hook payload) error = %v", err)
+	}
+	return encoded
+}
+
+func runTestCLI(
+	input []byte,
+	arguments ...string,
+) ([]byte, string, time.Duration, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, "", 0, err
+	}
+	command := exec.Command(executable, arguments...)
+	command.Stdin = bytes.NewReader(input)
+	var output, diagnostics bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &diagnostics
+	startedAt := time.Now()
+	err = command.Run()
+	return output.Bytes(), diagnostics.String(), time.Since(startedAt), err
+}
+
+func decodeCodexContext(t *testing.T, output []byte) string {
+	t.Helper()
+	var decoded struct {
+		Continue           bool `json:"continue"`
+		HookSpecificOutput struct {
+			HookEventName     string `json:"hookEventName"`
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(output, &decoded); err != nil {
+		t.Fatalf("decode Codex hook stdout %q: %v", output, err)
+	}
+	if !decoded.Continue || decoded.HookSpecificOutput.AdditionalContext == "" {
+		t.Fatalf("Codex hook stdout = %q", output)
+	}
+	return decoded.HookSpecificOutput.AdditionalContext
+}
+
+func waitForRuntimeHealth(
+	t *testing.T,
+	root string,
+	ready func(journal.RuntimeHealth) bool,
+) journal.RuntimeHealth {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var lastHealth journal.RuntimeHealth
+	var lastError error
+	for time.Now().Before(deadline) {
+		lastHealth, lastError = journal.InspectRuntimeHealth(
+			context.Background(),
+			journal.OpenOptions{ProjectRoot: root},
+			time.Now().UTC(),
+		)
+		if lastError == nil && ready(lastHealth) {
+			return lastHealth
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf(
+		"runtime health did not reach expected state: health = %+v, error = %v",
+		lastHealth,
+		lastError,
+	)
+	return journal.RuntimeHealth{}
 }
 
 func twoDigit(value int) string {

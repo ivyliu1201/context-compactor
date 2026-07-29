@@ -36,25 +36,13 @@ type Store struct {
 }
 
 func Open(ctx context.Context, options OpenOptions) (*Store, error) {
-	if strings.TrimSpace(options.ProjectRoot) == "" {
-		return nil, fmt.Errorf("project root is required")
-	}
-
-	projectRoot, err := filepath.Abs(options.ProjectRoot)
+	projectRoot, err := CanonicalProjectRoot(options.ProjectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("resolve project root: %w", err)
+		return nil, err
 	}
-	projectRoot = filepath.Clean(projectRoot)
-
-	databasePath := options.Path
-	if strings.TrimSpace(databasePath) == "" {
-		databasePath = filepath.Join(projectRoot, filepath.FromSlash(defaultRelativePath))
-	} else if !filepath.IsAbs(databasePath) {
-		databasePath = filepath.Join(projectRoot, databasePath)
-	}
-	databasePath, err = filepath.Abs(databasePath)
+	databasePath, err := ResolveDatabasePath(projectRoot, options.Path)
 	if err != nil {
-		return nil, fmt.Errorf("resolve database path: %w", err)
+		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create journal directory: %w", err)
@@ -147,4 +135,8 @@ func (store *Store) Close() error {
 
 func (store *Store) Path() string {
 	return store.path
+}
+
+func (store *Store) ProjectRoot() string {
+	return store.projectRoot
 }

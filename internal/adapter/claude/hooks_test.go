@@ -212,7 +212,7 @@ func TestWriteOutputLimitsContextToSupportedEvents(t *testing.T) {
 	if err := WriteOutput(&postCompactOutput, EventPostCompact, Output{}); err != nil {
 		t.Fatalf("WriteOutput(PostCompact, empty) error = %v", err)
 	}
-	if postCompactOutput.String() != "{\"continue\":true}\n" {
+	if postCompactOutput.String() != "" {
 		t.Fatalf("WriteOutput(PostCompact, empty) = %q", postCompactOutput.String())
 	}
 }

@@ -3,11 +3,13 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ivyliu1201/context-compactor/internal/compiler"
 	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
@@ -24,7 +26,8 @@ func TestRefreshWorkerBuildsAndPublishesDurableJob(t *testing.T) {
 			OperationSeq: view.LastOperationSeq,
 			ViewDigest:   view.Digest,
 		},
-		EnqueuedAt: now,
+		Configuration: runtimeRefreshConfiguration(),
+		EnqueuedAt:    now,
 	})
 	if err != nil {
 		t.Fatalf("EnqueueCapsuleRefresh() error = %v", err)
@@ -33,8 +36,8 @@ func TestRefreshWorkerBuildsAndPublishesDurableJob(t *testing.T) {
 	worker := RefreshWorker{
 		Queue:         store,
 		Snapshots:     store,
-		Limits:        runtimeTestLimits(),
 		LeaseDuration: time.Minute,
+		RetryDelay:    time.Second,
 		Now:           func() time.Time { return now.Add(time.Minute) },
 	}
 	result, err := worker.ProcessNext(ctx)
@@ -69,7 +72,8 @@ func TestRefreshWorkerReleasesFailedJobForRetry(t *testing.T) {
 			OperationSeq: view.LastOperationSeq,
 			ViewDigest:   view.Digest,
 		},
-		EnqueuedAt: now,
+		Configuration: runtimeRefreshConfiguration(),
+		EnqueuedAt:    now,
 	}); err != nil {
 		t.Fatalf("EnqueueCapsuleRefresh() error = %v", err)
 	}
@@ -77,8 +81,8 @@ func TestRefreshWorkerReleasesFailedJobForRetry(t *testing.T) {
 	worker := RefreshWorker{
 		Queue:         store,
 		Snapshots:     failingSnapshotReader{err: errors.New("snapshot unavailable")},
-		Limits:        runtimeTestLimits(),
 		LeaseDuration: time.Minute,
+		RetryDelay:    time.Second,
 		Now:           func() time.Time { return now },
 	}
 	if _, err := worker.ProcessNext(ctx); err == nil {
@@ -91,6 +95,58 @@ func TestRefreshWorkerReleasesFailedJobForRetry(t *testing.T) {
 	)
 	if err != nil || !found || job.AttemptCount != 2 {
 		t.Fatalf("claim retried job = %+v, found %t, error %v", job, found, err)
+	}
+	if !strings.Contains(job.LastError, "snapshot unavailable") ||
+		job.LastFailedAt != now ||
+		!job.Retryable {
+		t.Fatalf("retry diagnostics = %+v", job)
+	}
+}
+
+func TestRefreshWorkerDrainProcessesEveryPendingJob(t *testing.T) {
+	ctx := context.Background()
+	store := openRuntimeStore(t, ctx)
+	enqueuedAt := time.Date(2026, 7, 23, 6, 30, 0, 0, time.UTC)
+	view := emptyRuntimeView(t)
+	for index := 1; index <= 3; index++ {
+		if _, err := store.EnqueueCapsuleRefresh(ctx, journal.CapsuleRefreshRequest{
+			RepositoryScope: "repository",
+			Trigger:         journal.RefreshAfterTurn,
+			Source: journal.CapsuleRefreshSource{
+				EventSeq:     int64(index),
+				OperationSeq: view.LastOperationSeq,
+				ViewDigest:   view.Digest,
+			},
+			Configuration: runtimeRefreshConfiguration(),
+			EnqueuedAt:    enqueuedAt.Add(time.Duration(index) * time.Second),
+		}); err != nil {
+			t.Fatalf("enqueue refresh job %d: %v", index, err)
+		}
+	}
+
+	worker := RefreshWorker{
+		Queue:         store,
+		Snapshots:     store,
+		LeaseDuration: time.Minute,
+		RetryDelay:    time.Second,
+		Now:           func() time.Time { return enqueuedAt.Add(time.Minute) },
+	}
+	result, err := worker.Drain(ctx)
+	if err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+	if result.Processed != 3 ||
+		result.Published != 3 ||
+		result.Discarded != 0 ||
+		result.Failed != 0 {
+		t.Fatalf("Drain() result = %+v", result)
+	}
+	if job, found, err := store.ClaimNextCapsuleRefresh(
+		ctx,
+		enqueuedAt.Add(2*time.Minute),
+		time.Minute,
+	); err != nil || found {
+		t.Fatalf("queue after Drain() = %+v, found %t, error %v", job, found, err)
 	}
 }
 
@@ -119,6 +175,15 @@ func emptyRuntimeView(t *testing.T) reducer.View {
 
 func runtimeTestLimits() compiler.BudgetLimits {
 	return compiler.BudgetLimits{Target: 256, Trigger: 512, Hard: 1024}
+}
+
+func runtimeRefreshConfiguration() journal.RefreshConfiguration {
+	return journal.RefreshConfiguration{
+		PrivacyMode:           protocol.PrivacyBalanced,
+		Limits:                runtimeTestLimits(),
+		CompilerPolicyVersion: compiler.CompilerPolicyVersion,
+		TokenCounterIdentity:  compiler.RenderCounterIdentity,
+	}
 }
 
 type failingSnapshotReader struct {

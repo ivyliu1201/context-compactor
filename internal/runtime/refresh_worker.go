@@ -7,7 +7,14 @@ import (
 
 	"github.com/ivyliu1201/context-compactor/internal/compiler"
 	"github.com/ivyliu1201/context-compactor/internal/journal"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 	"github.com/ivyliu1201/context-compactor/internal/reducer"
+)
+
+const (
+	DefaultRefreshLease = 2 * time.Minute
+	DefaultRetryDelay   = time.Second
+	DefaultWorkerLease  = 30 * time.Second
 )
 
 type RefreshJobQueue interface {
@@ -22,7 +29,11 @@ type RefreshJobQueue interface {
 		compiler.VerifiedCapsule,
 		time.Time,
 	) (journal.CapsulePublishResult, error)
-	RetryCapsuleRefresh(context.Context, string) error
+	RetryCapsuleRefresh(
+		context.Context,
+		string,
+		journal.CapsuleRefreshFailure,
+	) error
 }
 
 type RefreshWorkResult struct {
@@ -35,13 +46,20 @@ type RefreshWorkResult struct {
 type RefreshWorker struct {
 	Queue         RefreshJobQueue
 	Snapshots     OperationSnapshotReader
-	Limits        compiler.BudgetLimits
 	LeaseDuration time.Duration
+	RetryDelay    time.Duration
 	Now           func() time.Time
 }
 
-// ProcessNext compiles exactly one durable refresh job. Build failures release
-// the job for retry without persisting diagnostic text.
+type RefreshDrainResult struct {
+	Processed int
+	Published int
+	Discarded int
+	Failed    int
+}
+
+// ProcessNext compiles exactly one durable refresh job. Build failures persist
+// a bounded reason and leave the job retryable after RetryDelay.
 func (worker RefreshWorker) ProcessNext(
 	ctx context.Context,
 ) (RefreshWorkResult, error) {
@@ -57,16 +75,11 @@ func (worker RefreshWorker) ProcessNext(
 	if worker.LeaseDuration <= 0 {
 		return RefreshWorkResult{}, fmt.Errorf("refresh lease duration must be positive")
 	}
+	if worker.RetryDelay <= 0 {
+		return RefreshWorkResult{}, fmt.Errorf("refresh retry delay must be positive")
+	}
 	if worker.Now == nil {
 		return RefreshWorkResult{}, fmt.Errorf("refresh clock is required")
-	}
-	if _, err := compiler.CompileBudgeted(
-		reducer.View{},
-		"",
-		worker.Limits,
-		compiler.RenderCounterProfile(),
-	); err != nil {
-		return RefreshWorkResult{}, fmt.Errorf("validate refresh budget: %w", err)
 	}
 
 	now := worker.Now().UTC()
@@ -83,25 +96,69 @@ func (worker RefreshWorker) ProcessNext(
 	}
 	result := RefreshWorkResult{Found: true, JobID: job.ID}
 
-	if err := worker.buildAndPublish(ctx, job, now, &result); err != nil {
-		if retryErr := worker.Queue.RetryCapsuleRefresh(ctx, job.ID); retryErr != nil {
+	if err := worker.buildAndPublish(ctx, job, &result); err != nil {
+		failedAt := worker.Now().UTC()
+		if retryErr := worker.Queue.RetryCapsuleRefresh(
+			ctx,
+			job.ID,
+			journal.CapsuleRefreshFailure{
+				Reason:    err.Error(),
+				FailedAt:  failedAt,
+				RetryAt:   failedAt.Add(worker.RetryDelay),
+				Retryable: true,
+			},
+		); retryErr != nil {
 			return RefreshWorkResult{}, fmt.Errorf(
 				"process capsule refresh and release retry: %v; release: %w",
 				err,
 				retryErr,
 			)
 		}
-		return RefreshWorkResult{}, err
+		return result, err
 	}
 	return result, nil
+}
+
+// Drain processes every currently claimable job. A failed job is scheduled for
+// a later retry so unrelated jobs can continue draining; Drain returns the
+// first build error after no immediately claimable work remains.
+func (worker RefreshWorker) Drain(
+	ctx context.Context,
+) (RefreshDrainResult, error) {
+	var drained RefreshDrainResult
+	var firstError error
+	for {
+		result, err := worker.ProcessNext(ctx)
+		if result.Found {
+			drained.Processed++
+		}
+		if result.Published {
+			drained.Published++
+		}
+		if result.Discarded {
+			drained.Discarded++
+		}
+		if err != nil {
+			drained.Failed++
+			if firstError == nil {
+				firstError = err
+			}
+			continue
+		}
+		if !result.Found {
+			return drained, firstError
+		}
+	}
 }
 
 func (worker RefreshWorker) buildAndPublish(
 	ctx context.Context,
 	job journal.CapsuleRefreshJob,
-	completedAt time.Time,
 	result *RefreshWorkResult,
 ) error {
+	if err := validateRefreshJobConfiguration(job.Configuration); err != nil {
+		return err
+	}
 	operations, err := worker.Snapshots.LoadOperationsThrough(
 		ctx,
 		job.Source.OperationSeq,
@@ -125,7 +182,7 @@ func (worker RefreshWorker) buildAndPublish(
 	compiled, err := compiler.CompileBudgeted(
 		view,
 		"",
-		worker.Limits,
+		job.Configuration.Limits,
 		compiler.RenderCounterProfile(),
 	)
 	if err != nil {
@@ -144,12 +201,48 @@ func (worker RefreshWorker) buildAndPublish(
 		ctx,
 		job.ID,
 		capsule,
-		completedAt,
+		worker.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("publish refresh capsule: %w", err)
 	}
 	result.Published = published.Published
 	result.Discarded = published.Discarded
+	return nil
+}
+
+func validateRefreshJobConfiguration(
+	configuration journal.RefreshConfiguration,
+) error {
+	switch configuration.PrivacyMode {
+	case protocol.PrivacyStrict, protocol.PrivacyBalanced, protocol.PrivacyAudit:
+	default:
+		return fmt.Errorf(
+			"refresh job has unsupported privacy mode %q",
+			configuration.PrivacyMode,
+		)
+	}
+	if configuration.CompilerPolicyVersion != compiler.CompilerPolicyVersion {
+		return fmt.Errorf(
+			"refresh job compiler policy %q does not match worker %q",
+			configuration.CompilerPolicyVersion,
+			compiler.CompilerPolicyVersion,
+		)
+	}
+	if configuration.TokenCounterIdentity != compiler.RenderCounterIdentity {
+		return fmt.Errorf(
+			"refresh job counter %q does not match worker %q",
+			configuration.TokenCounterIdentity,
+			compiler.RenderCounterIdentity,
+		)
+	}
+	if _, err := compiler.CompileBudgeted(
+		reducer.View{},
+		"",
+		configuration.Limits,
+		compiler.RenderCounterProfile(),
+	); err != nil {
+		return fmt.Errorf("validate refresh job budget: %w", err)
+	}
 	return nil
 }

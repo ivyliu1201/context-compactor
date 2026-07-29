@@ -203,6 +203,69 @@ CREATE INDEX capsule_refresh_jobs_claim_idx
     ON capsule_refresh_jobs(status, lease_until, source_operation_seq, source_event_seq);
 `,
 	},
+	{
+		version: 4,
+		sql: `
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN privacy_mode TEXT NOT NULL DEFAULT 'balanced'
+        CHECK (privacy_mode IN ('strict', 'balanced', 'audit'));
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN target_budget INTEGER NOT NULL DEFAULT 8192
+        CHECK (target_budget > 0);
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN trigger_budget INTEGER NOT NULL DEFAULT 12288
+        CHECK (trigger_budget > target_budget);
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN hard_budget INTEGER NOT NULL DEFAULT 16384
+        CHECK (hard_budget > trigger_budget);
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN compiler_policy_version TEXT NOT NULL
+        DEFAULT 'context-compactor/compiler/v1';
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN token_counter_identity TEXT NOT NULL
+        DEFAULT 'context-compactor/jsonl-utf8-bytes/v1';
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN last_attempt_at TEXT;
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN last_error TEXT;
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN last_failed_at TEXT;
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN next_attempt_at TEXT;
+ALTER TABLE capsule_refresh_jobs
+    ADD COLUMN retryable INTEGER NOT NULL DEFAULT 1
+        CHECK (retryable IN (0, 1));
+
+CREATE INDEX capsule_refresh_jobs_retry_idx
+    ON capsule_refresh_jobs(
+        status,
+        retryable,
+        next_attempt_at,
+        lease_until,
+        source_operation_seq,
+        source_event_seq
+    );
+
+CREATE TABLE refresh_worker_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    worker_token TEXT NOT NULL CHECK (length(worker_token) = 64),
+    state TEXT NOT NULL CHECK (state IN ('starting', 'running', 'idle', 'failed')),
+    process_id INTEGER CHECK (process_id IS NULL OR process_id > 0),
+    configuration_digest TEXT NOT NULL CHECK (length(configuration_digest) = 64),
+    started_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    lease_until TEXT,
+    stopped_at TEXT,
+    last_error TEXT
+) STRICT;
+
+CREATE TABLE runtime_metrics (
+    metric TEXT PRIMARY KEY,
+    value INTEGER NOT NULL CHECK (value >= 0),
+    updated_at TEXT NOT NULL
+) STRICT;
+`,
+	},
 }
 
 const migrationTableSQL = `
@@ -213,6 +276,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 ) STRICT;`
 
 func applyMigrations(ctx context.Context, db *sql.DB) error {
+	return applyMigrationSet(ctx, db, migrations, func() time.Time {
+		return time.Now().UTC()
+	})
+}
+
+func applyMigrationSet(
+	ctx context.Context,
+	db *sql.DB,
+	items []migration,
+	now func() time.Time,
+) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin schema migration: %w", err)
@@ -223,7 +297,7 @@ func applyMigrations(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("bootstrap schema migrations: %w", err)
 	}
 
-	for _, item := range migrations {
+	for _, item := range items {
 		checksum := migrationChecksum(item.sql)
 		var recorded string
 		err := tx.QueryRowContext(
@@ -254,7 +328,7 @@ func applyMigrations(ctx context.Context, db *sql.DB) error {
 			"INSERT INTO schema_migrations(version, checksum, applied_at) VALUES (?, ?, ?)",
 			item.version,
 			checksum,
-			time.Now().UTC().Format(time.RFC3339Nano),
+			now().UTC().Format(time.RFC3339Nano),
 		); err != nil {
 			return fmt.Errorf("record migration %d: %w", item.version, err)
 		}

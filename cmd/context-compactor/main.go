@@ -24,8 +24,6 @@ import (
 	compactruntime "github.com/ivyliu1201/context-compactor/internal/runtime"
 )
 
-const defaultRefreshLease = 2 * time.Minute
-
 var defaultLimits = compiler.BudgetLimits{
 	Target:  8 * 1024,
 	Trigger: 12 * 1024,
@@ -37,6 +35,7 @@ var (
 	managementProbe                = management.ProbeExecutable
 	benchmarkModelInvoker          = commandForegroundModelInvoker
 	benchmarkRepositoryFingerprint = currentRepositoryFingerprint
+	hookWorkerLauncherFactory      = defaultHookWorkerLauncher
 )
 
 func main() {
@@ -99,6 +98,11 @@ func runHook(
 	flags.SetOutput(diagnostics)
 	hostName := flags.String("host", "", "hook host: codex or claude")
 	projectRoot := flags.String("project-root", "", "repository root; defaults to hook cwd")
+	databasePath := flags.String(
+		"database-path",
+		"",
+		"repository journal path; defaults under project root",
+	)
 	scope := flags.String(
 		"repository-scope",
 		compactruntime.DefaultRepositoryScope,
@@ -129,10 +133,14 @@ func runHook(
 	}
 	handler := compactruntime.LocalHookHandler{
 		ProjectRoot:     *projectRoot,
+		DatabasePath:    *databasePath,
 		RepositoryScope: *scope,
 		PrivacyMode:     privacyMode,
 		Extractor:       compactruntime.DirectiveExtractor{},
 		Limits:          *limits,
+		Launcher:        hookWorkerLauncherFactory(diagnostics, now),
+		RefreshLease:    compactruntime.DefaultRefreshLease,
+		Diagnostics:     diagnostics,
 	}
 	return compactruntime.ExecuteHook(
 		ctx,
@@ -149,11 +157,47 @@ func runRefreshWorker(
 	args []string,
 	diagnostics io.Writer,
 	now func() time.Time,
-) error {
+) (returnErr error) {
 	flags := flag.NewFlagSet("refresh-worker", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
 	projectRoot := flags.String("project-root", "", "repository root")
-	lease := flags.Duration("lease", defaultRefreshLease, "durable job lease")
+	databasePath := flags.String("database-path", "", "exact repository journal path")
+	scope := flags.String(
+		"repository-scope",
+		compactruntime.DefaultRepositoryScope,
+		"repository-local capsule scope",
+	)
+	privacyName := flags.String(
+		"privacy",
+		string(protocol.PrivacyBalanced),
+		"privacy mode used by legacy v3 jobs",
+	)
+	lease := flags.Duration(
+		"lease",
+		compactruntime.DefaultRefreshLease,
+		"durable job lease",
+	)
+	workerLease := flags.Duration(
+		"worker-lease",
+		compactruntime.DefaultWorkerLease,
+		"repository single-flight worker lease",
+	)
+	workerToken := flags.String(
+		"worker-token",
+		"",
+		"launcher-owned worker token",
+	)
+	drain := flags.Bool("drain", false, "process claimable jobs until the queue is empty")
+	policyVersion := flags.String(
+		"compiler-policy-version",
+		compiler.CompilerPolicyVersion,
+		"expected compiler policy version",
+	)
+	counterIdentity := flags.String(
+		"counter-identity",
+		compiler.RenderCounterIdentity,
+		"expected token counter identity",
+	)
 	limits := bindBudgetFlags(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -167,26 +211,224 @@ func runRefreshWorker(
 	if now == nil {
 		return fmt.Errorf("runtime clock is required")
 	}
-	store, err := journal.Open(ctx, journal.OpenOptions{ProjectRoot: *projectRoot})
+	privacyMode, err := parsePrivacyMode(*privacyName)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(*scope) == "" {
+		return fmt.Errorf("refresh-worker repository scope is required")
+	}
+	if *policyVersion != compiler.CompilerPolicyVersion {
+		return fmt.Errorf(
+			"refresh-worker compiler policy %q does not match binary %q",
+			*policyVersion,
+			compiler.CompilerPolicyVersion,
+		)
+	}
+	if *counterIdentity != compiler.RenderCounterIdentity {
+		return fmt.Errorf(
+			"refresh-worker counter %q does not match binary %q",
+			*counterIdentity,
+			compiler.RenderCounterIdentity,
+		)
+	}
+	if *workerLease <= 0 {
+		return fmt.Errorf("refresh-worker worker lease must be positive")
+	}
+	store, err := journal.Open(ctx, journal.OpenOptions{
+		ProjectRoot: *projectRoot,
+		Path:        *databasePath,
+	})
 	if err != nil {
 		return fmt.Errorf("open refresh journal: %w", err)
 	}
+	defer func() {
+		if closeErr := store.Close(); closeErr != nil && returnErr == nil {
+			returnErr = fmt.Errorf("close refresh journal: %w", closeErr)
+		}
+	}()
+
+	configuration := journal.RefreshConfiguration{
+		PrivacyMode:           privacyMode,
+		Limits:                *limits,
+		CompilerPolicyVersion: *policyVersion,
+		TokenCounterIdentity:  *counterIdentity,
+	}
+	token := strings.TrimSpace(*workerToken)
+	startedAt := now().UTC()
+	configurationDigest, err := compactruntime.WorkerConfigurationDigest(
+		store.ProjectRoot(),
+		store.Path(),
+		strings.TrimSpace(*scope),
+		configuration,
+		*lease,
+		*workerLease,
+	)
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		token, err = compactruntime.NewWorkerToken()
+		if err != nil {
+			return err
+		}
+		acquired, acquireErr := store.AcquireRefreshWorker(
+			ctx,
+			journal.RefreshWorkerLeaseRequest{
+				Token:               token,
+				ConfigurationDigest: configurationDigest,
+				StartedAt:           startedAt,
+				LeaseDuration:       *workerLease,
+			},
+		)
+		if acquireErr != nil {
+			return acquireErr
+		}
+		if !acquired {
+			return nil
+		}
+	}
+	if err := store.ActivateRefreshWorker(
+		ctx,
+		token,
+		os.Getpid(),
+		configurationDigest,
+		startedAt,
+		*workerLease,
+	); err != nil {
+		failedAt := now().UTC()
+		if failErr := store.FailRefreshWorker(
+			ctx,
+			token,
+			failedAt,
+			err.Error(),
+		); failErr != nil {
+			return fmt.Errorf(
+				"activate refresh worker: %v; record worker failure: %w",
+				err,
+				failErr,
+			)
+		}
+		return err
+	}
+
 	worker := compactruntime.RefreshWorker{
 		Queue:         store,
 		Snapshots:     store,
-		Limits:        *limits,
 		LeaseDuration: *lease,
+		RetryDelay:    compactruntime.DefaultRetryDelay,
 		Now:           now,
 	}
-	_, workErr := worker.ProcessNext(ctx)
-	closeErr := store.Close()
-	if workErr != nil {
-		return workErr
+	for {
+		stopHeartbeat, heartbeatError := startRefreshWorkerHeartbeat(
+			ctx,
+			store,
+			token,
+			*workerLease,
+			now,
+		)
+		var workErr error
+		if *drain {
+			_, workErr = worker.Drain(ctx)
+		} else {
+			_, workErr = worker.ProcessNext(ctx)
+		}
+		stopHeartbeat()
+		if heartbeatErr := <-heartbeatError; heartbeatErr != nil && workErr == nil {
+			workErr = heartbeatErr
+		}
+		if workErr != nil {
+			failedAt := now().UTC()
+			if failErr := store.FailRefreshWorker(
+				ctx,
+				token,
+				failedAt,
+				workErr.Error(),
+			); failErr != nil {
+				return fmt.Errorf(
+					"refresh worker failed: %v; record worker failure: %w",
+					workErr,
+					failErr,
+				)
+			}
+			return workErr
+		}
+		stopped, stopErr := store.StopRefreshWorkerIfIdle(ctx, token, now().UTC())
+		if stopErr != nil {
+			return stopErr
+		}
+		if stopped {
+			return nil
+		}
+		if !*drain {
+			reason := "refresh worker stopped before the claimable queue drained"
+			if failErr := store.FailRefreshWorker(
+				ctx,
+				token,
+				now().UTC(),
+				reason,
+			); failErr != nil {
+				return failErr
+			}
+			return fmt.Errorf("%s; rerun with --drain", reason)
+		}
+		if err := store.HeartbeatRefreshWorker(
+			ctx,
+			token,
+			now().UTC(),
+			*workerLease,
+		); err != nil {
+			return err
+		}
 	}
-	if closeErr != nil {
-		return fmt.Errorf("close refresh journal: %w", closeErr)
+}
+
+func defaultHookWorkerLauncher(
+	_ io.Writer,
+	now func() time.Time,
+) compactruntime.WorkerLauncher {
+	return compactruntime.DetachedWorkerLauncher{
+		Executable:  currentExecutable,
+		Now:         now,
+		WorkerLease: compactruntime.DefaultWorkerLease,
 	}
-	return nil
+}
+
+func startRefreshWorkerHeartbeat(
+	ctx context.Context,
+	store *journal.Store,
+	token string,
+	lease time.Duration,
+	now func() time.Time,
+) (func(), <-chan error) {
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	interval := lease / 3
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				if err := store.HeartbeatRefreshWorker(
+					heartbeatCtx,
+					token,
+					now().UTC(),
+					lease,
+				); err != nil {
+					done <- err
+					return
+				}
+			}
+		}
+	}()
+	return cancel, done
 }
 
 func runManagement(
@@ -200,6 +442,16 @@ func runManagement(
 	flags := flag.NewFlagSet(action, flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
 	projectRoot := flags.String("project-root", "", "repository root")
+	runtimeProjectRoot := flags.String(
+		"runtime-project-root",
+		"",
+		"repository whose runtime journal status/doctor should inspect; defaults to project-root",
+	)
+	runtimeDatabasePath := flags.String(
+		"runtime-database-path",
+		"",
+		"runtime journal path; defaults under runtime project root",
+	)
 	hostName := flags.String("host", "all", "managed host: codex, claude, or all")
 	executable := flags.String(
 		"executable",
@@ -242,6 +494,8 @@ func runManagement(
 	}
 	manager := management.Manager{
 		ProjectRoot:             *projectRoot,
+		RuntimeProjectRoot:      *runtimeProjectRoot,
+		RuntimeDatabasePath:     *runtimeDatabasePath,
 		DynamicCodexProjectRoot: *dynamicCodexProjectRoot,
 		Executable:              executablePath,
 		Now:                     now,

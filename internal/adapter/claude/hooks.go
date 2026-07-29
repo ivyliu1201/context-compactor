@@ -92,14 +92,17 @@ func DecodeHook(reader io.Reader, occurredAt time.Time) (DecodedHook, error) {
 	return decoded, nil
 }
 
-// WriteOutput writes the structured JSON Claude Code expects on hook stdout.
-// Event-specific validation prevents unsupported context or blocking controls.
+// WriteOutput writes a response only when context or a blocking decision is
+// present. A successful hook with no verified memory leaves stdout empty.
 func WriteOutput(writer io.Writer, eventName HookEventName, output Output) error {
 	if writer == nil {
 		return fmt.Errorf("Claude hook output writer is required")
 	}
 	if err := validateOutput(eventName, output); err != nil {
 		return err
+	}
+	if output.AdditionalContext == "" && !output.Block {
+		return nil
 	}
 
 	wire := hookOutput{Continue: true}

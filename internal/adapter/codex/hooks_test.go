@@ -249,7 +249,7 @@ func TestWriteOutputUsesOnlySupportedAdditionalContextEvents(t *testing.T) {
 		if err := WriteOutput(&output, eventName, ""); err != nil {
 			t.Fatalf("WriteOutput(%s, empty) error = %v", eventName, err)
 		}
-		if output.String() != "{\"continue\":true}\n" {
+		if output.String() != "" {
 			t.Fatalf("WriteOutput(%s, empty) = %q", eventName, output.String())
 		}
 	}

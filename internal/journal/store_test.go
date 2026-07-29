@@ -3,10 +3,12 @@ package journal
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +54,192 @@ func TestOpenConfiguresDurableSchemaWithoutPromptColumns(t *testing.T) {
 	}
 	if checksum != migrationChecksum(migrations[0].sql) {
 		t.Fatalf("migration checksum = %q, want current migration checksum", checksum)
+	}
+	var latestVersion int
+	if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").
+		Scan(&latestVersion); err != nil {
+		t.Fatalf("read latest migration version: %v", err)
+	}
+	if latestVersion != 4 {
+		t.Fatalf("latest migration version = %d, want 4", latestVersion)
+	}
+	refreshColumns := tableColumns(t, store, "capsule_refresh_jobs")
+	for _, required := range []string{
+		"privacy_mode",
+		"target_budget",
+		"trigger_budget",
+		"hard_budget",
+		"compiler_policy_version",
+		"token_counter_identity",
+		"last_attempt_at",
+		"last_error",
+		"last_failed_at",
+		"next_attempt_at",
+		"retryable",
+	} {
+		if !refreshColumns[required] {
+			t.Errorf("capsule_refresh_jobs is missing v4 column %q", required)
+		}
+	}
+	assertTableExists(t, store.db, "refresh_worker_state")
+	assertTableExists(t, store.db, "runtime_metrics")
+}
+
+func TestMigrationV3ToV4PreservesExistingRefreshJobsAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	databasePath := filepath.Join(root, ".context-compactor", "context.db")
+	db := openRawMigrationDB(t, databasePath)
+	if err := applyMigrationSet(ctx, db, migrations[:3], func() time.Time {
+		return journalTestTime
+	}); err != nil {
+		t.Fatalf("apply v3 migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO capsule_refresh_jobs (
+    job_id, repository_scope, trigger, source_event_seq,
+    source_operation_seq, source_view_digest, status, attempt_count,
+    enqueued_at, lease_until, completed_at
+) VALUES (?, 'repository', 'after_turn', 7, 3, ?, 'pending', 0, ?, NULL, NULL)`,
+		strings.Repeat("a", 64),
+		strings.Repeat("b", 64),
+		formatTime(journalTestTime),
+	); err != nil {
+		t.Fatalf("insert v3 refresh job: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v3 database: %v", err)
+	}
+
+	store, err := Open(ctx, OpenOptions{ProjectRoot: root, Path: databasePath})
+	if err != nil {
+		t.Fatalf("upgrade v3 database: %v", err)
+	}
+	var jobCount, retryable int
+	var privacyMode, policyVersion, counterIdentity string
+	if err := store.db.QueryRowContext(ctx, `
+SELECT COUNT(*), privacy_mode, compiler_policy_version,
+       token_counter_identity, retryable
+FROM capsule_refresh_jobs
+WHERE job_id = ?`,
+		strings.Repeat("a", 64),
+	).Scan(
+		&jobCount,
+		&privacyMode,
+		&policyVersion,
+		&counterIdentity,
+		&retryable,
+	); err != nil {
+		t.Fatalf("read upgraded refresh job: %v", err)
+	}
+	if jobCount != 1 ||
+		privacyMode != "balanced" ||
+		policyVersion != "context-compactor/compiler/v1" ||
+		counterIdentity != "context-compactor/jsonl-utf8-bytes/v1" ||
+		retryable != 1 {
+		t.Fatalf(
+			"upgraded refresh job = count %d, privacy %q, policy %q, counter %q, retryable %d",
+			jobCount,
+			privacyMode,
+			policyVersion,
+			counterIdentity,
+			retryable,
+		)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close upgraded database: %v", err)
+	}
+
+	reopened, err := Open(ctx, OpenOptions{ProjectRoot: root, Path: databasePath})
+	if err != nil {
+		t.Fatalf("reapply v4 migration: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	assertTableCount(t, reopened, "capsule_refresh_jobs", 1)
+	var v4Count int
+	if err := reopened.db.QueryRow(
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = 4",
+	).Scan(&v4Count); err != nil {
+		t.Fatalf("count v4 migration: %v", err)
+	}
+	if v4Count != 1 {
+		t.Fatalf("v4 migration records = %d, want 1", v4Count)
+	}
+}
+
+func TestMigrationFailureRollsBackPartialV4Changes(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "migration-failure.db")
+	db := openRawMigrationDB(t, databasePath)
+	defer func() { _ = db.Close() }()
+	if err := applyMigrationSet(ctx, db, migrations[:3], func() time.Time {
+		return journalTestTime
+	}); err != nil {
+		t.Fatalf("apply v3 migrations: %v", err)
+	}
+
+	broken := append([]migration(nil), migrations[:3]...)
+	broken = append(broken, migration{
+		version: 4,
+		sql: `
+ALTER TABLE capsule_refresh_jobs ADD COLUMN partial_v4_marker TEXT;
+INSERT INTO table_that_does_not_exist(value) VALUES ('fail');`,
+	})
+	if err := applyMigrationSet(ctx, db, broken, func() time.Time {
+		return journalTestTime.Add(time.Minute)
+	}); err == nil {
+		t.Fatal("apply broken v4 migration error = nil")
+	}
+
+	store := &Store{db: db}
+	if tableColumns(t, store, "capsule_refresh_jobs")["partial_v4_marker"] {
+		t.Fatal("failed v4 migration left partial column behind")
+	}
+	var v4Count int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = 4",
+	).Scan(&v4Count); err != nil {
+		t.Fatalf("count failed v4 migration: %v", err)
+	}
+	if v4Count != 0 {
+		t.Fatalf("failed v4 migration records = %d, want 0", v4Count)
+	}
+}
+
+func TestRefreshWorkerActivationRequiresMatchingConfigurationDigest(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTestStore(t)
+	now := journalTestTime.Add(2 * time.Hour)
+	token := strings.Repeat("a", 64)
+	digest := strings.Repeat("b", 64)
+	acquired, err := store.AcquireRefreshWorker(ctx, RefreshWorkerLeaseRequest{
+		Token:               token,
+		ConfigurationDigest: digest,
+		StartedAt:           now,
+		LeaseDuration:       time.Minute,
+	})
+	if err != nil || !acquired {
+		t.Fatalf("AcquireRefreshWorker() = %t, error = %v", acquired, err)
+	}
+	if err := store.ActivateRefreshWorker(
+		ctx,
+		token,
+		123,
+		strings.Repeat("c", 64),
+		now,
+		time.Minute,
+	); err == nil {
+		t.Fatal("ActivateRefreshWorker() accepted mismatched configuration digest")
+	}
+	if err := store.ActivateRefreshWorker(
+		ctx,
+		token,
+		123,
+		digest,
+		now,
+		time.Minute,
+	); err != nil {
+		t.Fatalf("ActivateRefreshWorker() error = %v", err)
 	}
 }
 
@@ -297,4 +485,36 @@ func assertTableCount(t *testing.T, store *Store, table string, want int) {
 	if got != want {
 		t.Fatalf("%s count = %d, want %d", table, got, want)
 	}
+}
+
+func assertTableExists(t *testing.T, db *sql.DB, table string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+		table,
+	).Scan(&count); err != nil {
+		t.Fatalf("inspect table %s: %v", table, err)
+	}
+	if count != 1 {
+		t.Fatalf("table %s count = %d, want 1", table, count)
+	}
+}
+
+func openRawMigrationDB(t *testing.T, databasePath string) *sql.DB {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
+		t.Fatalf("create migration database directory: %v", err)
+	}
+	db, err := sql.Open("sqlite", sqliteDSN(databasePath))
+	if err != nil {
+		t.Fatalf("open migration database: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		t.Fatalf("connect migration database: %v", err)
+	}
+	return db
 }

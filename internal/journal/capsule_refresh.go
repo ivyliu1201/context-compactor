@@ -14,6 +14,7 @@ import (
 
 	"github.com/ivyliu1201/context-compactor/internal/compiler"
 	"github.com/ivyliu1201/context-compactor/internal/privacy"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
 type RefreshTrigger string
@@ -35,7 +36,15 @@ type CapsuleRefreshRequest struct {
 	RepositoryScope string
 	Trigger         RefreshTrigger
 	Source          CapsuleRefreshSource
+	Configuration   RefreshConfiguration
 	EnqueuedAt      time.Time
+}
+
+type RefreshConfiguration struct {
+	PrivacyMode           protocol.PrivacyMode
+	Limits                compiler.BudgetLimits
+	CompilerPolicyVersion string
+	TokenCounterIdentity  string
 }
 
 type CapsuleRefreshJob struct {
@@ -43,14 +52,27 @@ type CapsuleRefreshJob struct {
 	RepositoryScope string
 	Trigger         RefreshTrigger
 	Source          CapsuleRefreshSource
+	Configuration   RefreshConfiguration
 	AttemptCount    int
 	EnqueuedAt      time.Time
 	LeaseUntil      time.Time
+	LastAttemptAt   time.Time
+	LastError       string
+	LastFailedAt    time.Time
+	NextAttemptAt   time.Time
+	Retryable       bool
 }
 
 type CapsulePublishResult struct {
 	Published bool
 	Discarded bool
+}
+
+type CapsuleRefreshFailure struct {
+	Reason    string
+	FailedAt  time.Time
+	RetryAt   time.Time
+	Retryable bool
 }
 
 // EnqueueCapsuleRefresh durably records one fixed source snapshot. Its
@@ -69,8 +91,10 @@ func (store *Store) EnqueueCapsuleRefresh(
 INSERT INTO capsule_refresh_jobs (
     job_id, repository_scope, trigger, source_event_seq,
     source_operation_seq, source_view_digest, status, attempt_count,
-    enqueued_at, lease_until, completed_at
-) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL)
+    enqueued_at, lease_until, completed_at, privacy_mode,
+    target_budget, trigger_budget, hard_budget, compiler_policy_version,
+    token_counter_identity, retryable
+) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, 1)
 ON CONFLICT(job_id) DO NOTHING`,
 		jobID,
 		scope,
@@ -79,15 +103,25 @@ ON CONFLICT(job_id) DO NOTHING`,
 		request.Source.OperationSeq,
 		request.Source.ViewDigest,
 		formatTime(request.EnqueuedAt),
+		string(request.Configuration.PrivacyMode),
+		request.Configuration.Limits.Target,
+		request.Configuration.Limits.Trigger,
+		request.Configuration.Limits.Hard,
+		request.Configuration.CompilerPolicyVersion,
+		request.Configuration.TokenCounterIdentity,
 	); err != nil {
 		return "", fmt.Errorf("enqueue capsule refresh: %w", err)
 	}
 
-	var storedScope, trigger, digest, enqueuedAt string
+	var storedScope, trigger, digest, enqueuedAt, privacyMode string
+	var policyVersion, counterIdentity string
 	var eventSeq, operationSeq int64
+	var targetBudget, triggerBudget, hardBudget int
 	if err := store.db.QueryRowContext(ctx, `
 SELECT repository_scope, trigger, source_event_seq, source_operation_seq,
-       source_view_digest, enqueued_at
+       source_view_digest, enqueued_at, privacy_mode, target_budget,
+       trigger_budget, hard_budget, compiler_policy_version,
+       token_counter_identity
 FROM capsule_refresh_jobs
 WHERE job_id = ?`,
 		jobID,
@@ -98,13 +132,25 @@ WHERE job_id = ?`,
 		&operationSeq,
 		&digest,
 		&enqueuedAt,
+		&privacyMode,
+		&targetBudget,
+		&triggerBudget,
+		&hardBudget,
+		&policyVersion,
+		&counterIdentity,
 	); err != nil {
 		return "", fmt.Errorf("verify enqueued capsule refresh: %w", err)
 	}
 	if storedScope != scope ||
 		eventSeq != request.Source.EventSeq ||
 		operationSeq != request.Source.OperationSeq ||
-		digest != request.Source.ViewDigest {
+		digest != request.Source.ViewDigest ||
+		privacyMode != string(request.Configuration.PrivacyMode) ||
+		targetBudget != request.Configuration.Limits.Target ||
+		triggerBudget != request.Configuration.Limits.Trigger ||
+		hardBudget != request.Configuration.Limits.Hard ||
+		policyVersion != request.Configuration.CompilerPolicyVersion ||
+		counterIdentity != request.Configuration.TokenCounterIdentity {
 		return "", fmt.Errorf("capsule refresh job identity conflict")
 	}
 	return jobID, nil
@@ -132,15 +178,25 @@ func (store *Store) ClaimNextCapsuleRefresh(
 	defer func() { _ = tx.Rollback() }()
 
 	var job CapsuleRefreshJob
-	var trigger, enqueuedAt string
+	var trigger, enqueuedAt, privacyMode, policyVersion, counterIdentity string
+	var lastError, lastFailedAt, nextAttemptAt sql.NullString
+	var retryable int
 	err = tx.QueryRowContext(ctx, `
 SELECT job_id, repository_scope, trigger, source_event_seq,
-       source_operation_seq, source_view_digest, attempt_count, enqueued_at
+       source_operation_seq, source_view_digest, attempt_count, enqueued_at,
+       privacy_mode, target_budget, trigger_budget, hard_budget,
+       compiler_policy_version, token_counter_identity, last_error,
+       last_failed_at, next_attempt_at, retryable
 FROM capsule_refresh_jobs
-WHERE status = 'pending'
+WHERE (
+        status = 'pending'
+        AND retryable = 1
+        AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+      )
    OR (status = 'processing' AND lease_until <= ?)
 ORDER BY source_operation_seq, source_event_seq, job_id
 LIMIT 1`,
+		formatTime(now),
 		formatTime(now),
 	).Scan(
 		&job.ID,
@@ -151,6 +207,16 @@ LIMIT 1`,
 		&job.Source.ViewDigest,
 		&job.AttemptCount,
 		&enqueuedAt,
+		&privacyMode,
+		&job.Configuration.Limits.Target,
+		&job.Configuration.Limits.Trigger,
+		&job.Configuration.Limits.Hard,
+		&policyVersion,
+		&counterIdentity,
+		&lastError,
+		&lastFailedAt,
+		&nextAttemptAt,
+		&retryable,
 	)
 	if err == sql.ErrNoRows {
 		return CapsuleRefreshJob{}, false, nil
@@ -159,6 +225,9 @@ LIMIT 1`,
 		return CapsuleRefreshJob{}, false, fmt.Errorf("select capsule refresh job: %w", err)
 	}
 	job.Trigger = RefreshTrigger(trigger)
+	job.Configuration.PrivacyMode = protocol.PrivacyMode(privacyMode)
+	job.Configuration.CompilerPolicyVersion = policyVersion
+	job.Configuration.TokenCounterIdentity = counterIdentity
 	job.EnqueuedAt, err = parseTime(enqueuedAt)
 	if err != nil {
 		return CapsuleRefreshJob{}, false, fmt.Errorf("parse refresh enqueued_at: %w", err)
@@ -169,10 +238,16 @@ UPDATE capsule_refresh_jobs
 SET status = 'processing',
     attempt_count = attempt_count + 1,
     lease_until = ?,
-    completed_at = NULL
+    completed_at = NULL,
+    last_attempt_at = ?,
+    next_attempt_at = NULL
 WHERE job_id = ?
-  AND (status = 'pending' OR (status = 'processing' AND lease_until <= ?))`,
+  AND (
+        (status = 'pending' AND retryable = 1)
+        OR (status = 'processing' AND lease_until <= ?)
+      )`,
 		formatTime(leaseUntil),
+		formatTime(now),
 		job.ID,
 		formatTime(now),
 	)
@@ -191,19 +266,54 @@ WHERE job_id = ?
 	}
 	job.AttemptCount++
 	job.LeaseUntil = leaseUntil
+	job.LastAttemptAt = now
+	job.LastError = lastError.String
+	job.Retryable = retryable == 1
+	if lastFailedAt.Valid {
+		job.LastFailedAt, err = parseTime(lastFailedAt.String)
+		if err != nil {
+			return CapsuleRefreshJob{}, false, fmt.Errorf("parse refresh last_failed_at: %w", err)
+		}
+	}
+	if nextAttemptAt.Valid {
+		job.NextAttemptAt, err = parseTime(nextAttemptAt.String)
+		if err != nil {
+			return CapsuleRefreshJob{}, false, fmt.Errorf("parse refresh next_attempt_at: %w", err)
+		}
+	}
 	return job, true, nil
 }
 
-// RetryCapsuleRefresh releases a claimed job without persisting its error text.
-// Diagnostics may contain sensitive transient details and remain on stderr.
+// RetryCapsuleRefresh releases a claimed job and stores a bounded, privacy-safe
+// reason so status and doctor can distinguish a stopped worker from a failing
+// build.
 func (store *Store) RetryCapsuleRefresh(
 	ctx context.Context,
 	jobID string,
+	failure CapsuleRefreshFailure,
 ) error {
+	reason, err := validateCapsuleRefreshFailure(failure)
+	if err != nil {
+		return err
+	}
+	var retryAt any
+	if failure.Retryable {
+		retryAt = formatTime(failure.RetryAt)
+	}
 	result, err := store.db.ExecContext(ctx, `
 UPDATE capsule_refresh_jobs
-SET status = 'pending', lease_until = NULL, completed_at = NULL
+SET status = 'pending',
+    lease_until = NULL,
+    completed_at = NULL,
+    last_error = ?,
+    last_failed_at = ?,
+    next_attempt_at = ?,
+    retryable = ?
 WHERE job_id = ? AND status = 'processing'`,
+		reason,
+		formatTime(failure.FailedAt),
+		retryAt,
+		boolInt(failure.Retryable),
 		jobID,
 	)
 	if err != nil {
@@ -473,7 +583,9 @@ func completeRefreshJob(
 ) error {
 	result, err := tx.ExecContext(ctx, `
 UPDATE capsule_refresh_jobs
-SET status = ?, lease_until = NULL, completed_at = ?
+SET status = ?, lease_until = NULL, completed_at = ?,
+    last_error = NULL, last_failed_at = NULL, next_attempt_at = NULL,
+    retryable = 0
 WHERE job_id = ? AND status = 'processing'`,
 		status,
 		formatTime(completedAt),
@@ -516,7 +628,64 @@ func validateCapsuleRefreshRequest(
 	if err := validateUTC("refresh enqueued_at", request.EnqueuedAt); err != nil {
 		return "", err
 	}
+	if err := validateRefreshConfiguration(request.Configuration); err != nil {
+		return "", err
+	}
 	return scope, nil
+}
+
+func validateRefreshConfiguration(configuration RefreshConfiguration) error {
+	switch configuration.PrivacyMode {
+	case protocol.PrivacyStrict, protocol.PrivacyBalanced, protocol.PrivacyAudit:
+	default:
+		return fmt.Errorf("unsupported refresh privacy mode %q", configuration.PrivacyMode)
+	}
+	if configuration.Limits.Target <= 0 ||
+		configuration.Limits.Target >= configuration.Limits.Trigger ||
+		configuration.Limits.Trigger >= configuration.Limits.Hard {
+		return fmt.Errorf("refresh budgets must satisfy 0 < target < trigger < hard")
+	}
+	if strings.TrimSpace(configuration.CompilerPolicyVersion) == "" {
+		return fmt.Errorf("refresh compiler policy version is required")
+	}
+	if strings.TrimSpace(configuration.TokenCounterIdentity) == "" {
+		return fmt.Errorf("refresh token counter identity is required")
+	}
+	return nil
+}
+
+func validateCapsuleRefreshFailure(failure CapsuleRefreshFailure) (string, error) {
+	if err := validateUTC("refresh failed_at", failure.FailedAt); err != nil {
+		return "", err
+	}
+	if failure.Retryable {
+		if err := validateUTC("refresh retry_at", failure.RetryAt); err != nil {
+			return "", err
+		}
+		if failure.RetryAt.Before(failure.FailedAt) {
+			return "", fmt.Errorf("refresh retry_at must not precede failed_at")
+		}
+	} else if !failure.RetryAt.IsZero() {
+		return "", fmt.Errorf("non-retryable refresh failure must not set retry_at")
+	}
+	reason := strings.Join(strings.Fields(strings.TrimSpace(failure.Reason)), " ")
+	if reason == "" {
+		return "", fmt.Errorf("refresh failure reason is required")
+	}
+	if privacy.ContainsPotentialSecret(reason) {
+		return "refresh failure reason redacted by privacy policy", nil
+	}
+	if len(reason) > 512 {
+		reason = reason[:512]
+	}
+	return reason, nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func validateRepositoryScope(repositoryScope string) (string, error) {

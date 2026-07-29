@@ -3,10 +3,12 @@ package journal
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ivyliu1201/context-compactor/internal/compiler"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 	"github.com/ivyliu1201/context-compactor/internal/reducer"
 )
 
@@ -117,7 +119,12 @@ func TestCapsuleRefreshExpiredLeaseAndExplicitRetryRemainRecoverable(t *testing.
 	if err != nil || !found || expired.ID != first.ID || expired.AttemptCount != 2 {
 		t.Fatalf("expired lease claim = %+v, found %t, error %v", expired, found, err)
 	}
-	if err := store.RetryCapsuleRefresh(ctx, expired.ID); err != nil {
+	if err := store.RetryCapsuleRefresh(ctx, expired.ID, CapsuleRefreshFailure{
+		Reason:    "temporary compile failure",
+		FailedAt:  enqueuedAt.Add(2 * time.Minute),
+		RetryAt:   enqueuedAt.Add(3 * time.Minute),
+		Retryable: true,
+	}); err != nil {
 		t.Fatalf("RetryCapsuleRefresh() error = %v", err)
 	}
 	retried, found, err := store.ClaimNextCapsuleRefresh(
@@ -127,6 +134,29 @@ func TestCapsuleRefreshExpiredLeaseAndExplicitRetryRemainRecoverable(t *testing.
 	)
 	if err != nil || !found || retried.AttemptCount != 3 {
 		t.Fatalf("retried claim = %+v, found %t, error %v", retried, found, err)
+	}
+}
+
+func TestRefreshFailureReasonsRedactSecretsBeforeBounding(t *testing.T) {
+	reason := strings.Repeat("diagnostic ", 55) + "password=not-a-real-credential"
+	safeReason, err := validateCapsuleRefreshFailure(CapsuleRefreshFailure{
+		Reason:    reason,
+		FailedAt:  time.Date(2026, 7, 23, 3, 30, 0, 0, time.UTC),
+		RetryAt:   time.Date(2026, 7, 23, 3, 31, 0, 0, time.UTC),
+		Retryable: true,
+	})
+	if err != nil {
+		t.Fatalf("validateCapsuleRefreshFailure() error = %v", err)
+	}
+	if safeReason != "refresh failure reason redacted by privacy policy" {
+		t.Fatalf("refresh failure reason = %q", safeReason)
+	}
+	workerReason, err := boundedWorkerFailureReason(reason)
+	if err != nil {
+		t.Fatalf("boundedWorkerFailureReason() error = %v", err)
+	}
+	if workerReason != "refresh worker failure reason redacted by privacy policy" {
+		t.Fatalf("worker failure reason = %q", workerReason)
 	}
 }
 
@@ -198,6 +228,12 @@ func refreshRequest(
 			EventSeq:     eventSeq,
 			OperationSeq: view.LastOperationSeq,
 			ViewDigest:   view.Digest,
+		},
+		Configuration: RefreshConfiguration{
+			PrivacyMode:           protocol.PrivacyBalanced,
+			Limits:                compiler.BudgetLimits{Target: 256, Trigger: 512, Hard: 1024},
+			CompilerPolicyVersion: compiler.CompilerPolicyVersion,
+			TokenCounterIdentity:  compiler.RenderCounterIdentity,
 		},
 		EnqueuedAt: enqueuedAt,
 	}

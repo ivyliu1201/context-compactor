@@ -20,10 +20,12 @@ func TestLocalHookHandlerRunsAtomicPipelineAndDurablyEnqueuesRefresh(t *testing.
 		"[context-compactor] task: Finish executable hook runtime.",
 	}, "\n")
 	handler := LocalHookHandler{
-		ProjectRoot: root,
-		PrivacyMode: protocol.PrivacyBalanced,
-		Extractor:   DirectiveExtractor{},
-		Limits:      runtimeTestLimits(),
+		ProjectRoot:  root,
+		PrivacyMode:  protocol.PrivacyBalanced,
+		Extractor:    DirectiveExtractor{},
+		Limits:       runtimeTestLimits(),
+		Launcher:     successfulWorkerLauncher(),
+		RefreshLease: time.Minute,
 	}
 
 	first, err := handler.Handle(ctx, event)
@@ -89,10 +91,12 @@ func TestLocalHookHandlerRollsBackSemanticallyInvalidDirective(t *testing.T) {
 	event := localHandlerEvent(root)
 	event.Content = "[context-compactor] resolve: record-that-does-not-exist"
 	handler := LocalHookHandler{
-		ProjectRoot: root,
-		PrivacyMode: protocol.PrivacyBalanced,
-		Extractor:   DirectiveExtractor{},
-		Limits:      runtimeTestLimits(),
+		ProjectRoot:  root,
+		PrivacyMode:  protocol.PrivacyBalanced,
+		Extractor:    DirectiveExtractor{},
+		Limits:       runtimeTestLimits(),
+		Launcher:     successfulWorkerLauncher(),
+		RefreshLease: time.Minute,
 	}
 
 	if _, err := handler.Handle(ctx, event); err == nil ||
@@ -123,10 +127,12 @@ func TestLocalHookHandlerDoesNotEmitUnsupportedEventContext(t *testing.T) {
 	event.Kind = protocol.EventPreCompact
 	event.Content = "[context-compactor] task: ignored outside user prompt"
 	handler := LocalHookHandler{
-		ProjectRoot: root,
-		PrivacyMode: protocol.PrivacyBalanced,
-		Extractor:   DirectiveExtractor{},
-		Limits:      runtimeTestLimits(),
+		ProjectRoot:  root,
+		PrivacyMode:  protocol.PrivacyBalanced,
+		Extractor:    DirectiveExtractor{},
+		Limits:       runtimeTestLimits(),
+		Launcher:     successfulWorkerLauncher(),
+		RefreshLease: time.Minute,
 	}
 
 	result, err := handler.Handle(context.Background(), event)
@@ -152,4 +158,13 @@ func localHandlerEvent(root string) protocol.TransientEvent {
 			"transcript_compaction_owner": "host_native",
 		},
 	}
+}
+
+func successfulWorkerLauncher() WorkerLauncher {
+	return WorkerLauncherFunc(func(
+		context.Context,
+		WorkerLaunchRequest,
+	) (WorkerLaunchResult, error) {
+		return WorkerLaunchResult{Launched: true}, nil
+	})
 }

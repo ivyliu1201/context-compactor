@@ -42,6 +42,9 @@ agent hook
   -> candidate memory operations
   -> deterministic validation and reducer
   -> materialized memory view
+  -> durable refresh queue
+  -> detached repository worker
+  -> verified capsule publication
   -> relevance and token-budget compiler
   -> agent adapter injection
 ```
@@ -50,11 +53,14 @@ SQLite will become the event and memory source of record. Human-readable YAML
 or Markdown output will be generated views that can be rebuilt from validated
 records.
 
-The local journal uses the driver and Schema v1 rules recorded in
-`docs/adr/0001-sqlite-event-journal.md`. In the default schema, extraction runs
-while transient content is available and only event metadata plus validated
-memory operations are durable. This avoids retaining complete prompts merely
-to support later background extraction.
+The local journal uses the driver and foundational Schema v1 rules recorded in
+`docs/adr/0001-sqlite-event-journal.md`. The current additive Schema v4 retains
+those tables and adds durable refresh configuration, attempt and failure
+diagnostics, a repository worker lease, and runtime metrics. Migrations run in
+one transaction, are checksum-idempotent, and must preserve existing rows. In
+the default schema, extraction runs while transient content is available and
+only event metadata plus validated memory operations are durable. This avoids
+retaining complete prompts merely to support later background extraction.
 
 ## 5. Privacy modes
 
@@ -211,6 +217,18 @@ not overwrite a capsule compiled from newer operations. Consumer or retention
 cursors advance only with successful atomic publication. A crash before
 publication leaves the previous verified capsule usable.
 
+The executable hook durably enqueues its fixed snapshot, then asks a
+cross-platform launcher to start a detached `refresh-worker --drain`. The hook
+does not wait for compilation and the worker inherits none of the hook's
+standard streams. A repository-local lease provides single-flight startup
+across concurrent hook processes. The worker processes every currently
+claimable job, persists attempt and bounded failure state for retry, and
+atomically releases its lease only after an idle check that cannot lose a
+concurrent enqueue. Hook and worker use the same canonical project root,
+database path, repository scope, privacy mode, budgets, compiler-policy
+version, and counter identity; each job also persists this configuration for
+validation before compilation.
+
 The in-process adapter coordinator schedules the builder asynchronously and
 returns before the builder completes. It assigns a monotonically increasing
 generation per repository scope and publishes only when the completed capsule
@@ -288,6 +306,9 @@ transcript path. Complete prompts remain transient under the selected privacy
 mode. Standard output is reserved for the host protocol; diagnostics go to
 standard error and must not expose prompts, transcript paths, secrets, or
 generated capsule contents.
+When no active verified memory can produce a meaningful compiled context, the
+runtime exits successfully without writing any standard-output bytes. It must
+not emit an empty protocol wrapper, title, or capsule framing.
 
 The lifecycle of background refresh work must satisfy Section 7.1. A
 short-lived hook process must durably enqueue the refresh before returning or
@@ -295,6 +316,11 @@ hand it to a running local worker. It must not start an in-memory background
 goroutine and exit while reporting that the work was scheduled. Retries use
 stable event identity and journal idempotency, and invalid input or unavailable
 required state fails before partial durable mutation or malformed host output.
+`status` and `doctor` report the refresh backlog, oldest pending age, attempts,
+worker lifecycle, bounded failure reason, durable memory counts, capsule
+publication counts, injected bytes, and empty-context suppressions. A pending
+backlog older than the configured threshold with no attempts and no live
+worker is reported as `worker_not_running`.
 
 Installation is not considered successful unless the executable is resolvable,
 the selected host runtime path is healthy, and `doctor` can verify the installed
