@@ -143,6 +143,21 @@ func TestManagerInstallDynamicCodexProjectRootOmitsFixedRoot(t *testing.T) {
 	}
 }
 
+func TestPowershellCommandUsesCallOperator(t *testing.T) {
+	command := windowsCommand([]string{
+		`C:\Program Files\context-compactor\context-compactor.exe`,
+		"hook",
+		"--host",
+		"codex",
+	})
+
+	got := powershellCommand(command)
+
+	if got != "& "+command {
+		t.Fatalf("powershellCommand() = %q, want call operator before %q", got, command)
+	}
+}
+
 func TestManagerRemovesOnlyConfigurationFilesItCreated(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

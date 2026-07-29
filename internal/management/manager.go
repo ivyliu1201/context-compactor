@@ -486,7 +486,7 @@ func hookCommands(
 	if runtime.GOOS == "windows" {
 		command := windowsCommand(append([]string{executable}, arguments...))
 		if host == HostCodex {
-			return command, command
+			return command, powershellCommand(command)
 		}
 		return command, ""
 	}
@@ -499,6 +499,10 @@ func windowsCommand(arguments []string) string {
 		quoted[index] = `"` + strings.ReplaceAll(argument, `"`, `\"`) + `"`
 	}
 	return strings.Join(quoted, " ")
+}
+
+func powershellCommand(command string) string {
+	return "& " + command
 }
 
 func posixCommand(arguments []string) string {
