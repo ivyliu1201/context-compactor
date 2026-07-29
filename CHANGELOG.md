@@ -17,6 +17,25 @@ public release.
   derived advisory or blocking contradictions, and rebuildable materialized
   views.
 
+## [1.0.3] - 2026-07-29
+
+### Changed
+
+- Refined installer output with friendly status colors
+  (Cyan/Green/Yellow/Red).
+- Hid raw CLI JSON from general users in installer output.
+- Corrected bilingual README install and management wording, including global
+  Codex Hook removal and its managed-definition scope.
+
+### Breaking Changes
+
+- None.
+
+### Notes
+
+- No public protocol, runtime, or dependency behavior changes were introduced
+  in this release.
+
 ## [1.0.2] - 2026-07-28
 
 ### Fixed

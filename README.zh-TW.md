@@ -5,9 +5,10 @@
 `context-compactor` 是一個早期開發中的 local-first coding agent 上下文壓縮工具。
 它的目標是在預設不保存完整 prompt 的情況下，保留任務目標、限制、決策與實作狀態。
 
-> 狀態：已完成 protocol、本機 SQLite journal、deterministic reducer/compiler、
-> Codex／Claude hook runtime 與 durable capsule refresh handoff；
-> 已可從原始碼管理專案本地安裝，但目前尚無已發布的 binary。
+> 狀態：protocol、local SQLite journal、deterministic reducer/compiler、
+> Codex 與 Claude hook runtime，以及 durable capsule-refresh handoff 已完成實作。
+> 專案已有公開 Windows amd64 release，且原始碼安裝仍可供專案本地
+> Codex/Claude 使用。
 
 ## 設計目標
 
@@ -24,8 +25,9 @@ Repository 目前包含 `context-compactor/v1` protocol 型別、deterministic v
 每個 repository 各自使用的 SQLite event journal、deterministic reducer/compiler、
 Codex／Claude hook adapters 與可執行的本機 runtime。每次 hook 會在同一 transaction
 內寫入通過驗證的 memory operations 並重建 materialized view，之後才輸出 bounded
-context。Capsule refresh 會先持久寫入可恢復的 worker queue，不會只留在短生命週期
-goroutine。安裝與發行流程仍列在 [TODO.md](TODO.md)。
+context。Capsule refresh 已改為交由可恢復 worker 的 durable queue 處理，不再使用
+短生命週期 goroutine。行為規格請參閱 [SPEC.md](SPEC.md)，安裝與管理方式請參考
+本篇「安裝」章節。
 
 ## 開發
 
@@ -58,34 +60,47 @@ docker run --rm -e OPENAI_API_KEY -v "$PWD:/workspace" -w /workspace \
 時，benchmark 仍會回報 token 與 deterministic gate，但 model-dependent gate 會是
 `not_evaluated`。
 
-安裝目前這份 source-stage（Windows PowerShell 5.1+）：
+## 安裝
+
+### 從 release 安裝（Windows amd64）
+
+在 Windows PowerShell 5.1+ 執行：
+
+```powershell
+irm https://raw.githubusercontent.com/ivyliu1201/context-compactor/main/scripts/install-release.ps1 | iex
+```
+
+安裝器會從 GitHub latest release 下載 executable 與 `checksums.txt`、驗證
+SHA-256，並依序執行 `self-check`、`install`、`status`、`doctor`。
+
+- Cyan：進行中。
+- Green：成功。
+- Yellow：需處理。
+- Red：失敗。
+- 不會向一般使用者直接顯示原始 CLI JSON。
+- 未指定 `-ProjectRoot` 時，Codex config 與 install manifest 會放在使用者
+  `HOME`，且 Hook command 不會固定帶 `--project-root`。
+- 專案 root 依每次 Codex Hook payload 的 `cwd` 決定。
+- 指定 `-ProjectRoot` 時，仍保留 project-local 固定 root 行為。
+- Executable 會安裝到 `%LOCALAPPDATA%\context-compactor`。
+- Codex 可能仍需透過 `/hooks` 完成 review 或 trust。
+
+### 從 source 安裝（專案本地，需 Docker）
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot .
-```
-
-安裝腳本預設 `AgentHost` 為 `codex`，可改為 `-AgentHost claude` 或
-`-AgentHost all`。它會用 Docker (`golang:1.26`) 建置 `amd64`，安裝到
-`%LOCALAPPDATA%\context-compactor`，並用檔案 SHA-256 前 12 碼命名，接著執行
-`self-check`、`install`、`status`、`doctor`。目前仍為 source-stage 安裝，尚未
-有 GitHub Release 或公網 binary 下載入口。
-
-```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost claude
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost all
 ```
 
-Hook 只從標準輸入讀取一個 host payload，標準輸出只用來回傳 host JSON。Install
-只會將 context-compactor 的五種 lifecycle hooks 合併進專案本地設定，並把精確
-command 記錄在已被 gitignore 的 `.context-compactor/install.json`。Uninstall
-只移除完全相符的受管理項目；若使用者曾修改該 hook，會停止而不猜測刪除。
+### 移除全域 Codex Hook
 
-Codex definition 會寫入 `.codex/hooks.json`。Codex 要求使用者透過 `/hooks`
-審查並信任新增或變更的專案 hooks，因此 status 只會回報
-`awaiting_manual_trust`，不會宣稱壓縮已啟用。Claude definition 會寫入
-`.claude/settings.local.json`。Doctor 會實際執行安裝 binary 的 bounded
-self-check，並驗證每一個受管理 definition；無法讀取的 host trust 或企業政策會
-保留為 activation unknown。Refresh-worker 排程目前仍需手動設定。
+```powershell
+$m = Get-Content (Join-Path $HOME ".context-compactor\install.json") -Raw | ConvertFrom-Json; & $m.hosts.codex.executable uninstall --host codex --project-root $HOME
+```
+
+此 CLI 移除僅限本安裝器管理的 Hook 定義與 manifest entry，不會刪除已安裝的
+executable。
 
 一般 prompt 文字維持 transient。內建 deterministic extractor 只保存明確指令，例如：
 

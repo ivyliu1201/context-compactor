@@ -6,10 +6,10 @@
 coding agents. It is designed to preserve goals, constraints, decisions, and
 implementation state without persisting complete prompts by default.
 
-> Status: the protocol, local SQLite journal, deterministic reducer/compiler,
+> Status: protocol, local SQLite journal, deterministic reducer/compiler,
 > Codex and Claude hook runtime, and durable capsule-refresh handoff are
-> implemented. Project-local install management is available from source, but
-> there is no published binary yet.
+> implemented. Public Windows amd64 release distribution is available, and
+> source install remains available for project-local Codex/Claude workflows.
 
 ## Design goals
 
@@ -32,9 +32,9 @@ deterministic validation rules, a repository-local SQLite event journal,
 deterministic reducer/compiler, Codex and Claude hook adapters, and an
 executable local runtime. Hook invocations atomically append validated memory
 operations and rebuild the materialized view before emitting bounded context.
-Capsule refreshes are durably queued for a recoverable worker instead of being
-left in a short-lived goroutine. Installation and distribution remain tracked
-in [TODO.md](TODO.md).
+Capsule refreshes are durably queued to a recoverable worker instead of using
+short-lived goroutines. Refer to [SPEC.md](SPEC.md) for behavior contracts and
+the installation section below for install and management instructions.
 
 ## Development
 
@@ -67,37 +67,53 @@ Set `OPENAI_FOREGROUND_MODEL` to override the default foreground model. When no
 model command is configured, the benchmark still reports token and deterministic
 gates, but model-dependent gates remain `not_evaluated`.
 
-Install from this checked-out source (Windows PowerShell 5.1+):
+## Installation
+
+### Install from release (Windows amd64)
+
+Run this one-line installer in Windows PowerShell 5.1+:
+
+```powershell
+irm https://raw.githubusercontent.com/ivyliu1201/context-compactor/main/scripts/install-release.ps1 | iex
+```
+
+The installer downloads the release executable and `checksums.txt` from the
+latest GitHub Release, verifies SHA-256, runs `self-check`, then executes
+`install`, `status`, and `doctor`.
+
+- Cyan: step in progress.
+- Green: success.
+- Yellow: action required.
+- Red: failure.
+- Raw CLI JSON is not shown to end users.
+- Without an explicit `-ProjectRoot`, Codex configuration and the install
+  manifest are placed under user `HOME`, and the Hook command has no fixed
+  `--project-root`.
+- Runtime project root is derived from each Codex Hook payload `cwd`.
+- With an explicit `-ProjectRoot`, fixed project-local root behavior is
+  preserved.
+- The executable is installed under `%LOCALAPPDATA%\context-compactor`.
+- Codex may still require `/hooks` review or trust for activation.
+
+### Install from source (project-local, Docker-based)
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot .
-```
-
-The installer defaults `AgentHost` to `codex`, and supports `-AgentHost claude` or
-`-AgentHost all`. It builds `amd64` with Docker (`golang:1.26`), installs to
-`%LOCALAPPDATA%\context-compactor` with a SHA-256-first-12 filename, then runs
-`self-check`, `install`, `status`, and `doctor`. This is still source-stage
-installation; there is no public GitHub Release or public binary download path yet.
-
-```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost claude
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost all
 ```
 
-The hook reads exactly one host payload from standard input and reserves
-standard output for the host JSON response. Installation merges only the five
-context-compactor lifecycle hooks into project-local configuration and records
-their exact commands in the ignored `.context-compactor/install.json` file.
-Uninstall removes only exact managed entries and refuses ambiguous, user-edited
-definitions.
+These source installs support project-local Codex or Claude setup and require
+Docker.
 
-Codex definitions are written to `.codex/hooks.json`. Codex requires reviewing
-and trusting new or changed project hooks through `/hooks`, so status reports
-`awaiting_manual_trust` instead of claiming that compression is active. Claude
-definitions are written to `.claude/settings.local.json`. Doctor executes the
-installed binary's bounded self-check and verifies every managed definition;
-host activation remains unknown when external trust or enterprise policy
-cannot be inspected. Refresh-worker scheduling is still configured manually.
+### Remove global Codex Hook
+
+```powershell
+$m = Get-Content (Join-Path $HOME ".context-compactor\install.json") -Raw | ConvertFrom-Json; & $m.hosts.codex.executable uninstall --host codex --project-root $HOME
+```
+
+This CLI uninstall removes managed Hook definitions and manifest entries
+tracked by the installer. It does not delete the installed executable.
 
 Ordinary prompt text remains transient. The built-in deterministic extractor
 persists only explicit directives such as:
