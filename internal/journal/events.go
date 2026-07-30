@@ -186,7 +186,11 @@ func (store *Store) relativeCWD(cwd string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve event cwd: %w", err)
 	}
-	relative, err := filepath.Rel(store.projectRoot, filepath.Clean(absoluteCWD))
+	resolvedCWD, err := filepath.EvalSymlinks(absoluteCWD)
+	if err != nil {
+		return "", fmt.Errorf("resolve event cwd: %w", err)
+	}
+	relative, err := filepath.Rel(store.projectRoot, filepath.Clean(resolvedCWD))
 	if err != nil {
 		return "", fmt.Errorf("make event cwd relative to project root: %w", err)
 	}

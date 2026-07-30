@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -359,6 +361,49 @@ func TestAppendPersistsDigestAndOperationsWithoutTransientPrompt(t *testing.T) {
 	}
 	if strings.Contains(string(databaseBytes), transientPrompt) {
 		t.Fatalf("journal database contains complete transient prompt")
+	}
+}
+
+func TestAppendAcceptsCWDThroughProjectRootAlias(t *testing.T) {
+	projectRoot := t.TempDir()
+	aliasRoot := filepath.Join(t.TempDir(), "project-alias")
+	if err := os.Symlink(projectRoot, aliasRoot); err != nil {
+		if runtime.GOOS != "windows" {
+			t.Fatalf("create project root alias: %v", err)
+		}
+		output, junctionErr := exec.Command(
+			"cmd", "/c", "mklink", "/J", aliasRoot, projectRoot,
+		).CombinedOutput()
+		if junctionErr != nil {
+			t.Fatalf(
+				"create project root alias: symlink error = %v; junction error = %v: %s",
+				err,
+				junctionErr,
+				strings.TrimSpace(string(output)),
+			)
+		}
+	}
+
+	store, err := Open(context.Background(), OpenOptions{ProjectRoot: aliasRoot})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	request := validAppendRequest(aliasRoot, "event-through-project-alias", "")
+	if _, err := store.Append(context.Background(), request); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	var relativeCWD string
+	if err := store.db.QueryRow(
+		"SELECT relative_cwd FROM events WHERE event_id = ?",
+		request.Event.ID,
+	).Scan(&relativeCWD); err != nil {
+		t.Fatalf("read relative cwd: %v", err)
+	}
+	if relativeCWD != "." {
+		t.Fatalf("relative cwd = %q, want %q", relativeCWD, ".")
 	}
 }
 
