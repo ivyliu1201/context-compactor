@@ -9,6 +9,36 @@ public release.
 
 No unreleased changes.
 
+## [2.0.2] - 2026-07-30
+
+### Fixed
+
+- Start detached Windows repository workers with
+  `CREATE_BREAKAWAY_FROM_JOB` so Hook process cleanup does not terminate the
+  worker or its nested host-model command.
+- Constrain Codex memory-model responses with a strict JSON Schema, preventing
+  extra top-level fields from invalidating otherwise usable extraction output.
+
+### Migration
+
+- No schema, protocol, configuration, or dependency changes are required.
+- Re-run the release installer to replace the executable and refresh managed
+  Hook definitions.
+
+### Verification
+
+- Windows runtime and journal test executables passed.
+- `go vet ./...` passed.
+- A live Codex Hook run completed one memory job and one refresh job on their
+  first attempts, produced two operations and two records, published one
+  verified capsule, and injected it on the next `SessionStart`.
+
+### Known Issues
+
+- A capsule built from one short prompt can be larger than that prompt because
+  source, protocol, and verification framing have fixed cost. This
+  representation ratio is not provider billing savings.
+
 ## [2.0.1] - 2026-07-30
 
 ### Fixed

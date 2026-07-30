@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ func TestCodexModelArgsUseEphemeralConversation(t *testing.T) {
 		"gpt-test",
 		`C:\repo`,
 		`C:\temp\output.json`,
+		`C:\temp\schema.json`,
 		"low",
 	)
 
@@ -24,12 +26,43 @@ func TestCodexModelArgsUseEphemeralConversation(t *testing.T) {
 		`C:\repo`,
 		"--skip-git-repo-check",
 		"--ephemeral",
+		"--output-schema",
+		`C:\temp\schema.json`,
 		"--output-last-message",
 		`C:\temp\output.json`,
 		"-",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("codexModelArgs() = %#v, want %#v", args, want)
+	}
+}
+
+func TestCodexMemoryOutputSchemaRejectsUnknownTopLevelFields(t *testing.T) {
+	var schema struct {
+		Type                 string                     `json:"type"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+		Required             []string                   `json:"required"`
+		AdditionalProperties bool                       `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal([]byte(codexMemoryOutputSchema), &schema); err != nil {
+		t.Fatalf("decode codexMemoryOutputSchema: %v", err)
+	}
+	if schema.Type != "object" {
+		t.Fatalf("schema type = %q, want object", schema.Type)
+	}
+	if schema.AdditionalProperties {
+		t.Fatal("schema allows unknown top-level fields")
+	}
+	if _, found := schema.Properties["type"]; found {
+		t.Fatal("schema unexpectedly declares the rejected top-level type field")
+	}
+	for _, field := range []string{"protocol", "outcome", "memory_update"} {
+		if _, found := schema.Properties[field]; !found {
+			t.Fatalf("schema properties do not include %q", field)
+		}
+		if !containsString(schema.Required, field) {
+			t.Fatalf("schema required fields do not include %q", field)
+		}
 	}
 }
 
@@ -78,6 +111,15 @@ func TestFilterAnthropicEnvironmentRemovesCredentialVariables(t *testing.T) {
 	if !strings.Contains(joined, "PATH=") || !strings.Contains(joined, "OTHER=") {
 		t.Fatalf("filtered environment lost safe entries: %#v", filtered)
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func quotedJSON(value string) string {

@@ -17,6 +17,158 @@ const (
 	defaultReasoningEffort  = "low"
 
 	MemoryWorkerChildEnvironment = "CONTEXT_COMPACTOR_MEMORY_WORKER_CHILD"
+
+	codexMemoryOutputSchema = `{
+  "type": "object",
+  "properties": {
+    "protocol": {
+      "type": "string",
+      "enum": ["context-compactor/v1"]
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["no_change", "memory_update"]
+    },
+    "memory_update": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "type": "string",
+              "enum": ["context-compactor/v1"]
+            },
+            "privacy_mode": {
+              "type": "string",
+              "enum": ["balanced"]
+            },
+            "source_event_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "operations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": ["add", "supersede", "resolve", "expire"]
+                  },
+                  "target_id": {
+                    "type": ["string", "null"]
+                  },
+                  "record": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "conflict_key": {
+                            "type": ["string", "null"]
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "goal",
+                              "acceptance_criterion",
+                              "constraint",
+                              "decision",
+                              "blocker",
+                              "question",
+                              "task",
+                              "file",
+                              "test_result"
+                            ]
+                          },
+                          "value": {
+                            "type": "string"
+                          },
+                          "priority": {
+                            "type": "string",
+                            "enum": ["critical", "high", "normal", "low"]
+                          },
+                          "confidence": {
+                            "type": "string",
+                            "enum": ["explicit", "verified", "inferred"]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": ["active"]
+                          },
+                          "source": {
+                            "type": "object",
+                            "properties": {
+                              "event_id": {
+                                "type": "string"
+                              },
+                              "evidence": {
+                                "type": ["string", "null"]
+                              },
+                              "artifact": {
+                                "type": ["string", "null"]
+                              }
+                            },
+                            "required": ["event_id", "evidence", "artifact"],
+                            "additionalProperties": false
+                          },
+                          "created_at": {
+                            "type": "string"
+                          },
+                          "expires_at": {
+                            "type": ["string", "null"]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "conflict_key",
+                          "kind",
+                          "value",
+                          "priority",
+                          "confidence",
+                          "status",
+                          "source",
+                          "created_at",
+                          "expires_at"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["id", "kind", "target_id", "record"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "protocol",
+            "privacy_mode",
+            "source_event_id",
+            "created_at",
+            "operations"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": ["protocol", "outcome", "memory_update"],
+  "additionalProperties": false
+}`
 )
 
 // HostModelRunner invokes the same signed-in host CLI that delivered the hook.
@@ -70,10 +222,27 @@ func (runner HostModelRunner) invokeCodex(
 	}
 	defer func() { _ = os.Remove(outputPath) }()
 
+	schemaFile, err := os.CreateTemp("", "context-compactor-model-schema-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create model output schema file: %w", err)
+	}
+	schemaPath := schemaFile.Name()
+	if _, err := schemaFile.WriteString(codexMemoryOutputSchema); err != nil {
+		_ = schemaFile.Close()
+		_ = os.Remove(schemaPath)
+		return "", fmt.Errorf("write model output schema file: %w", err)
+	}
+	if closeErr := schemaFile.Close(); closeErr != nil {
+		_ = os.Remove(schemaPath)
+		return "", fmt.Errorf("close model output schema file: %w", closeErr)
+	}
+	defer func() { _ = os.Remove(schemaPath) }()
+
 	args := codexModelArgs(
 		call.Model,
 		call.ProjectRoot,
 		outputPath,
+		schemaPath,
 		reasoning,
 	)
 	command := exec.CommandContext(ctx, executable, args...)
@@ -130,6 +299,7 @@ func codexModelArgs(
 	model string,
 	projectRoot string,
 	outputPath string,
+	schemaPath string,
 	reasoningEffort string,
 ) []string {
 	args := []string{"exec", "-m", model}
@@ -144,6 +314,7 @@ func codexModelArgs(
 		"--cd", projectRoot,
 		"--skip-git-repo-check",
 		"--ephemeral",
+		"--output-schema", schemaPath,
 		"--output-last-message", outputPath,
 		"-",
 	)

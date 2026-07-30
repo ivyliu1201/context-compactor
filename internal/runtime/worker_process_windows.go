@@ -10,8 +10,12 @@ import (
 )
 
 const (
-	windowsDetachedProcess       = 0x00000008
-	windowsCreateNewProcessGroup = 0x00000200
+	windowsDetachedProcess        = 0x00000008
+	windowsCreateNewProcessGroup  = 0x00000200
+	windowsCreateBreakawayFromJob = 0x01000000
+	windowsDetachedWorkerFlags    = windowsDetachedProcess |
+		windowsCreateNewProcessGroup |
+		windowsCreateBreakawayFromJob
 )
 
 func startDetachedProcess(executable string, args []string) error {
@@ -26,9 +30,8 @@ func startDetachedProcess(executable string, args []string) error {
 	command.Stdout = null
 	command.Stderr = null
 	command.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow: true,
-		CreationFlags: windowsDetachedProcess |
-			windowsCreateNewProcessGroup,
+		HideWindow:    true,
+		CreationFlags: windowsDetachedWorkerFlags,
 	}
 	if err := command.Start(); err != nil {
 		return err
