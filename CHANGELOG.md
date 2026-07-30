@@ -9,6 +9,24 @@ public release.
 
 No unreleased changes.
 
+## [2.0.1] - 2026-07-30
+
+### Fixed
+
+- Canonicalize event working directories with the same symbolic-link and
+  junction resolution used for project roots, preventing valid Windows paths
+  from being rejected as outside the project.
+
+### Migration
+
+- No schema, protocol, configuration, or dependency changes are required.
+- Re-run the release installer to replace the executable.
+
+### Verification
+
+- GitHub Actions CI passed `go test ./...`, `go vet ./...`, and the Windows
+  amd64 executable build.
+
 ## [2.0.0] - 2026-07-30
 
 ### Added
