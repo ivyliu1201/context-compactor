@@ -42,6 +42,9 @@ type VerifiedCapsule struct {
 	RequiredLookupIDs     []string
 }
 
+// MemorySnapshot is the plain-English name for immutable published context.
+type MemorySnapshot = VerifiedCapsule
+
 // PendingContext keeps the last verified capsule separate from newer durable
 // operations. It is a foreground fallback, not a newly published capsule.
 type PendingContext struct {

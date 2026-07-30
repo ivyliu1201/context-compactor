@@ -17,32 +17,28 @@ import (
 const DefaultRepositoryScope = "repository"
 
 type LocalHookHandler struct {
-	ProjectRoot     string
-	DatabasePath    string
-	RepositoryScope string
-	PrivacyMode     protocol.PrivacyMode
-	Extractor       Extractor
-	Limits          compiler.BudgetLimits
-	Launcher        WorkerLauncher
-	RefreshLease    time.Duration
-	Diagnostics     io.Writer
+	ProjectRoot         string
+	DatabasePath        string
+	RepositoryScope     string
+	PrivacyMode         protocol.PrivacyMode
+	PromptPolicyVersion string
+	Limits              compiler.BudgetLimits
+	Launcher            WorkerLauncher
+	RefreshLease        time.Duration
+	Diagnostics         io.Writer
 }
 
-// Handle executes the complete local hook pipeline. Complete event content is
-// consumed by extraction and relevance ranking but never written to the
-// journal or durable refresh queue.
+// Handle appends one hook event, queues bounded user prompts for the detached
+// worker, and returns foreground context without waiting for model extraction.
 func (handler LocalHookHandler) Handle(
 	ctx context.Context,
-	event protocol.TransientEvent,
+	event protocol.IncomingEvent,
 ) (Result, error) {
 	if ctx == nil {
 		return Result{}, fmt.Errorf("local hook context is required")
 	}
 	if err := protocol.ValidateTransientEvent(event); err != nil {
 		return Result{}, fmt.Errorf("validate local hook event: %w", err)
-	}
-	if handler.Extractor == nil {
-		return Result{}, fmt.Errorf("local hook extractor is required")
 	}
 	if handler.Launcher == nil {
 		return Result{}, fmt.Errorf("local hook worker launcher is required")
@@ -53,8 +49,8 @@ func (handler LocalHookHandler) Handle(
 	if err := validatePrivacyMode(handler.PrivacyMode); err != nil {
 		return Result{}, err
 	}
-	if _, err := compiler.CompileBudgeted(
-		reducer.View{},
+	if _, err := compiler.BuildContext(
+		reducer.CurrentMemory{},
 		"",
 		handler.Limits,
 		compiler.RenderCounterProfile(),
@@ -94,39 +90,34 @@ func (handler LocalHookHandler) Handle(
 
 func (handler LocalHookHandler) handleWithStore(
 	ctx context.Context,
-	event protocol.TransientEvent,
+	event protocol.IncomingEvent,
 	owner coreadapter.TranscriptCompactionOwner,
 	scope string,
 	store *journal.Store,
 ) (Result, error) {
-	prepared, err := (JournalHandler{
+	adapter := strings.TrimSpace(event.Metadata["host"])
+	if adapter == "" {
+		return Result{}, fmt.Errorf("event host metadata is required")
+	}
+	prepared := journal.AppendRequest{
+		Event:       event,
+		Adapter:     adapter,
 		PrivacyMode: handler.PrivacyMode,
-		Extractor:   handler.Extractor,
-	}).Prepare(ctx, event)
-	if err != nil {
-		return Result{}, err
+	}
+	if event.Kind == protocol.EventUserPrompt &&
+		strings.TrimSpace(event.Content) != "" {
+		policyVersion := strings.TrimSpace(handler.PromptPolicyVersion)
+		if policyVersion == "" {
+			policyVersion = MemoryPromptPolicyVersion
+		}
+		prepared.MemoryJob = &journal.MemoryJobRequest{
+			PromptPolicyVersion: policyVersion,
+			EnqueuedAt:          event.OccurredAt,
+		}
 	}
 	_, snapshot, err := store.AppendAndRebuildMemoryView(ctx, prepared)
 	if err != nil {
 		return Result{}, fmt.Errorf("append event and rebuild memory view: %w", err)
-	}
-	if _, err := store.EnqueueCapsuleRefresh(ctx, journal.CapsuleRefreshRequest{
-		RepositoryScope: scope,
-		Trigger:         refreshTrigger(event.Kind),
-		Source: journal.CapsuleRefreshSource{
-			EventSeq:     snapshot.LastEventSeq,
-			OperationSeq: snapshot.View.LastOperationSeq,
-			ViewDigest:   snapshot.View.Digest,
-		},
-		Configuration: journal.RefreshConfiguration{
-			PrivacyMode:           handler.PrivacyMode,
-			Limits:                handler.Limits,
-			CompilerPolicyVersion: compiler.CompilerPolicyVersion,
-			TokenCounterIdentity:  compiler.RenderCounterIdentity,
-		},
-		EnqueuedAt: event.OccurredAt,
-	}); err != nil {
-		return Result{}, fmt.Errorf("durably enqueue capsule refresh: %w", err)
 	}
 	handler.recordMetric(
 		ctx,
@@ -233,7 +224,7 @@ func (handler LocalHookHandler) compileForeground(
 		return result, nil
 	}
 
-	compiled, err := compiler.CompileBudgeted(
+	compiled, err := compiler.BuildContext(
 		snapshot.View,
 		query,
 		handler.Limits,
@@ -282,8 +273,8 @@ func (handler LocalHookHandler) writeDiagnostic(message string) {
 	_, _ = fmt.Fprintln(handler.Diagnostics, "context-compactor:", message)
 }
 
-func hasActiveMemory(view reducer.View) bool {
-	for _, record := range view.Records {
+func hasActiveMemory(memory reducer.CurrentMemory) bool {
+	for _, record := range memory.Records {
 		if record.Lifecycle == reducer.LifecycleActive {
 			return true
 		}
@@ -292,7 +283,7 @@ func hasActiveMemory(view reducer.View) bool {
 }
 
 func eventTranscriptOwner(
-	event protocol.TransientEvent,
+	event protocol.IncomingEvent,
 ) (coreadapter.TranscriptCompactionOwner, error) {
 	owner := coreadapter.TranscriptCompactionOwner(
 		strings.TrimSpace(event.Metadata["transcript_compaction_owner"]),
@@ -317,15 +308,6 @@ func eventSupportsAdditionalContext(kind protocol.EventKind) bool {
 	}
 }
 
-func refreshTrigger(kind protocol.EventKind) journal.RefreshTrigger {
-	switch kind {
-	case protocol.EventSessionStart, protocol.EventSubagentStart:
-		return journal.RefreshDuringIdle
-	default:
-		return journal.RefreshAfterTurn
-	}
-}
-
 type storeCapsuleProvider struct {
 	ctx   context.Context
 	store *journal.Store
@@ -333,6 +315,13 @@ type storeCapsuleProvider struct {
 
 func (provider storeCapsuleProvider) LatestVerifiedCapsule(
 	repositoryScope string,
-) (compiler.VerifiedCapsule, bool, error) {
+) (compiler.MemorySnapshot, bool, error) {
 	return provider.store.LatestVerifiedCapsule(provider.ctx, repositoryScope)
+}
+
+func validatePrivacyMode(mode protocol.PrivacyMode) error {
+	if mode == protocol.PrivacyStandard {
+		return nil
+	}
+	return fmt.Errorf("privacy policy must be standard")
 }

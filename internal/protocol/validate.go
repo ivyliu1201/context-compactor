@@ -103,6 +103,28 @@ func ValidateMutationBatch(batch MutationBatch) error {
 	return nil
 }
 
+func ValidateExtractionResult(result ExtractionResult) error {
+	if result.Protocol != Version {
+		return fmt.Errorf("protocol must equal %q", Version)
+	}
+	switch result.Outcome {
+	case OutcomeNoChange:
+		if result.MemoryUpdate != nil {
+			return fmt.Errorf("no_change result must not include memory_update")
+		}
+	case OutcomeMemoryUpdate:
+		if result.MemoryUpdate == nil {
+			return fmt.Errorf("memory_update result requires memory_update")
+		}
+		if err := ValidateMutationBatch(*result.MemoryUpdate); err != nil {
+			return fmt.Errorf("validate memory_update: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported extraction outcome %q", result.Outcome)
+	}
+	return nil
+}
+
 func validateOperation(operation Operation, batch MutationBatch, recordIDs map[string]struct{}) error {
 	if err := validateID("operation id", operation.ID); err != nil {
 		return err

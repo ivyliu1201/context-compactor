@@ -11,32 +11,26 @@ import (
 	"github.com/ivyliu1201/context-compactor/internal/protocol"
 )
 
-func TestLocalHookHandlerRunsAtomicPipelineAndDurablyEnqueuesRefresh(t *testing.T) {
+func TestLocalHookHandlerQueuesPromptWithoutRunningExtraction(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	event := localHandlerEvent(root)
-	event.Content = strings.Join([]string{
-		"ordinary text remains transient",
-		"[context-compactor] task: Finish executable hook runtime.",
-	}, "\n")
+	event.Content = "Finish the executable hook runtime in the background."
 	handler := LocalHookHandler{
-		ProjectRoot:  root,
-		PrivacyMode:  protocol.PrivacyBalanced,
-		Extractor:    DirectiveExtractor{},
-		Limits:       runtimeTestLimits(),
-		Launcher:     successfulWorkerLauncher(),
-		RefreshLease: time.Minute,
+		ProjectRoot:         root,
+		PrivacyMode:         protocol.PrivacyStandard,
+		PromptPolicyVersion: MemoryPromptPolicyVersion,
+		Limits:              runtimeTestLimits(),
+		Launcher:            successfulWorkerLauncher(),
+		RefreshLease:        time.Minute,
 	}
 
 	first, err := handler.Handle(ctx, event)
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
-	if !strings.Contains(first.AdditionalContext, "Finish executable hook runtime.") {
-		t.Fatalf("AdditionalContext = %q, want extracted task", first.AdditionalContext)
-	}
-	if strings.Contains(first.AdditionalContext, "ordinary text") {
-		t.Fatal("AdditionalContext contains ordinary transient prompt text")
+	if first.AdditionalContext != "" {
+		t.Fatalf("AdditionalContext = %q, want no inline extraction", first.AdditionalContext)
 	}
 	if first.TranscriptCompactionOwner != coreadapter.TranscriptOwnerHostNative {
 		t.Fatalf(
@@ -49,8 +43,8 @@ func TestLocalHookHandlerRunsAtomicPipelineAndDurablyEnqueuesRefresh(t *testing.
 	if err != nil {
 		t.Fatalf("idempotent Handle() error = %v", err)
 	}
-	if second.AdditionalContext != first.AdditionalContext {
-		t.Fatal("idempotent Handle() produced different foreground context")
+	if second.AdditionalContext != "" {
+		t.Fatalf("idempotent AdditionalContext = %q", second.AdditionalContext)
 	}
 
 	store, err := journal.Open(ctx, journal.OpenOptions{ProjectRoot: root})
@@ -62,46 +56,50 @@ func TestLocalHookHandlerRunsAtomicPipelineAndDurablyEnqueuesRefresh(t *testing.
 	if err != nil {
 		t.Fatalf("LoadOperationsThrough() error = %v", err)
 	}
-	if len(operations) != 1 {
-		t.Fatalf("durable operations = %d, want one idempotent operation", len(operations))
+	if len(operations) != 0 {
+		t.Fatalf("durable operations = %d, want background extraction only", len(operations))
 	}
-	job, found, err := store.ClaimNextCapsuleRefresh(
+	memoryJob, found, err := store.ClaimNextMemoryExtraction(
 		ctx,
 		event.OccurredAt.Add(time.Minute),
 		time.Minute,
 	)
 	if err != nil || !found {
-		t.Fatalf("ClaimNextCapsuleRefresh() = %+v, found %t, error %v", job, found, err)
+		t.Fatalf(
+			"ClaimNextMemoryExtraction() = %+v, found %t, error %v",
+			memoryJob,
+			found,
+			err,
+		)
 	}
-	if job.Source.EventSeq != 1 || job.Source.OperationSeq != 1 {
-		t.Fatalf("durable refresh source = %+v", job.Source)
+	if memoryJob.SourceEventID != event.ID || memoryJob.Prompt != event.Content {
+		t.Fatalf("queued memory job = %+v", memoryJob)
 	}
 	if _, found, err := store.ClaimNextCapsuleRefresh(
 		ctx,
 		event.OccurredAt.Add(time.Minute),
 		time.Minute,
 	); err != nil || found {
-		t.Fatalf("duplicate refresh claim = found %t, error %v", found, err)
+		t.Fatalf("inline refresh claim = found %t, error %v", found, err)
 	}
 }
 
-func TestLocalHookHandlerRollsBackSemanticallyInvalidDirective(t *testing.T) {
+func TestLocalHookHandlerDoesNotApplyPromptInline(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	event := localHandlerEvent(root)
-	event.Content = "[context-compactor] resolve: record-that-does-not-exist"
+	event.Content = "Resolve record-that-does-not-exist."
 	handler := LocalHookHandler{
-		ProjectRoot:  root,
-		PrivacyMode:  protocol.PrivacyBalanced,
-		Extractor:    DirectiveExtractor{},
-		Limits:       runtimeTestLimits(),
-		Launcher:     successfulWorkerLauncher(),
-		RefreshLease: time.Minute,
+		ProjectRoot:         root,
+		PrivacyMode:         protocol.PrivacyStandard,
+		PromptPolicyVersion: MemoryPromptPolicyVersion,
+		Limits:              runtimeTestLimits(),
+		Launcher:            successfulWorkerLauncher(),
+		RefreshLease:        time.Minute,
 	}
 
-	if _, err := handler.Handle(ctx, event); err == nil ||
-		!strings.Contains(err.Error(), "reduce appended memory operations") {
-		t.Fatalf("Handle() error = %v, want semantic reducer failure", err)
+	if _, err := handler.Handle(ctx, event); err != nil {
+		t.Fatalf("Handle() error = %v", err)
 	}
 	store, err := journal.Open(ctx, journal.OpenOptions{ProjectRoot: root})
 	if err != nil {
@@ -115,8 +113,12 @@ func TestLocalHookHandlerRollsBackSemanticallyInvalidDirective(t *testing.T) {
 	if len(operations) != 0 {
 		t.Fatalf("operations after rollback = %d, want zero", len(operations))
 	}
-	if _, found, err := store.LoadMemoryView(ctx); err != nil || found {
-		t.Fatalf("LoadMemoryView() found = %t, error = %v", found, err)
+	job, found, err := store.LoadMemoryExtractionJob(ctx, event.ID)
+	if err != nil || !found {
+		t.Fatalf("LoadMemoryExtractionJob() found = %t, error = %v", found, err)
+	}
+	if job.Prompt != event.Content {
+		t.Fatalf("queued prompt = %q", job.Prompt)
 	}
 }
 
@@ -125,14 +127,14 @@ func TestLocalHookHandlerDoesNotEmitUnsupportedEventContext(t *testing.T) {
 	event := localHandlerEvent(root)
 	event.ID = "event-local-precompact"
 	event.Kind = protocol.EventPreCompact
-	event.Content = "[context-compactor] task: ignored outside user prompt"
+	event.Content = "This text is ignored outside a user-prompt event."
 	handler := LocalHookHandler{
-		ProjectRoot:  root,
-		PrivacyMode:  protocol.PrivacyBalanced,
-		Extractor:    DirectiveExtractor{},
-		Limits:       runtimeTestLimits(),
-		Launcher:     successfulWorkerLauncher(),
-		RefreshLease: time.Minute,
+		ProjectRoot:         root,
+		PrivacyMode:         protocol.PrivacyStandard,
+		PromptPolicyVersion: MemoryPromptPolicyVersion,
+		Limits:              runtimeTestLimits(),
+		Launcher:            successfulWorkerLauncher(),
+		RefreshLease:        time.Minute,
 	}
 
 	result, err := handler.Handle(context.Background(), event)
@@ -141,6 +143,31 @@ func TestLocalHookHandlerDoesNotEmitUnsupportedEventContext(t *testing.T) {
 	}
 	if result.AdditionalContext != "" {
 		t.Fatalf("AdditionalContext = %q, want empty", result.AdditionalContext)
+	}
+}
+
+func TestLocalHookHandlerRejectsLegacyPrivacyPolicies(t *testing.T) {
+	for _, mode := range []protocol.PrivacyMode{
+		protocol.PrivacyStrict,
+		protocol.PrivacyAudit,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			root := t.TempDir()
+			handler := LocalHookHandler{
+				ProjectRoot:  root,
+				PrivacyMode:  mode,
+				Limits:       runtimeTestLimits(),
+				Launcher:     successfulWorkerLauncher(),
+				RefreshLease: time.Minute,
+			}
+			_, err := handler.Handle(
+				context.Background(),
+				localHandlerEvent(root),
+			)
+			if err == nil || !strings.Contains(err.Error(), "must be standard") {
+				t.Fatalf("Handle() error = %v, want standard-policy rejection", err)
+			}
+		})
 	}
 }
 

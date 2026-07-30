@@ -60,8 +60,8 @@ func TestOpenConfiguresDurableSchemaWithoutPromptColumns(t *testing.T) {
 		Scan(&latestVersion); err != nil {
 		t.Fatalf("read latest migration version: %v", err)
 	}
-	if latestVersion != 4 {
-		t.Fatalf("latest migration version = %d, want 4", latestVersion)
+	if latestVersion != 5 {
+		t.Fatalf("latest migration version = %d, want 5", latestVersion)
 	}
 	refreshColumns := tableColumns(t, store, "capsule_refresh_jobs")
 	for _, required := range []string{
@@ -83,6 +83,77 @@ func TestOpenConfiguresDurableSchemaWithoutPromptColumns(t *testing.T) {
 	}
 	assertTableExists(t, store.db, "refresh_worker_state")
 	assertTableExists(t, store.db, "runtime_metrics")
+	assertTableExists(t, store.db, "memory_extraction_jobs")
+	memoryJobColumns := tableColumns(t, store, "memory_extraction_jobs")
+	for _, required := range []string{
+		"prompt_text",
+		"prompt_sha256",
+		"prompt_policy_version",
+		"status",
+		"attempt_count",
+		"redaction_count",
+		"expires_at",
+		"result_outcome",
+		"model",
+	} {
+		if !memoryJobColumns[required] {
+			t.Errorf("memory_extraction_jobs is missing v5 column %q", required)
+		}
+	}
+}
+
+func TestMigrationV4ToV5PreservesExistingJournalAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	databasePath := filepath.Join(root, ".context-compactor", "context.db")
+	db := openRawMigrationDB(t, databasePath)
+	if err := applyMigrationSet(ctx, db, migrations[:4], func() time.Time {
+		return journalTestTime
+	}); err != nil {
+		t.Fatalf("apply v4 migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO events (
+    event_id, session_id, protocol, kind, adapter, privacy_mode, occurred_at,
+    relative_cwd, content_sha256, content_length, redaction_count, recorded_at
+) VALUES ('event-v4', 'session-v4', ?, 'user_prompt', 'codex-cli',
+          'balanced', ?, '.', ?, 12, 0, ?)`,
+		protocol.Version,
+		formatTime(journalTestTime),
+		strings.Repeat("a", 64),
+		formatTime(journalTestTime),
+	); err != nil {
+		t.Fatalf("insert v4 event: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v4 database: %v", err)
+	}
+
+	store, err := Open(ctx, OpenOptions{ProjectRoot: root, Path: databasePath})
+	if err != nil {
+		t.Fatalf("upgrade v4 database: %v", err)
+	}
+	assertTableExists(t, store.db, "memory_extraction_jobs")
+	assertTableCount(t, store, "events", 1)
+	if err := store.Close(); err != nil {
+		t.Fatalf("close upgraded database: %v", err)
+	}
+
+	reopened, err := Open(ctx, OpenOptions{ProjectRoot: root, Path: databasePath})
+	if err != nil {
+		t.Fatalf("reapply v5 migration: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	var v5Count int
+	if err := reopened.db.QueryRow(
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = 5",
+	).Scan(&v5Count); err != nil {
+		t.Fatalf("count v5 migration: %v", err)
+	}
+	if v5Count != 1 {
+		t.Fatalf("v5 migration records = %d, want 1", v5Count)
+	}
+	assertTableCount(t, reopened, "events", 1)
 }
 
 func TestMigrationV3ToV4PreservesExistingRefreshJobsAndIsIdempotent(t *testing.T) {

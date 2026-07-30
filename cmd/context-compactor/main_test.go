@@ -14,13 +14,24 @@ import (
 	"testing"
 	"time"
 
+	codexadapter "github.com/ivyliu1201/context-compactor/internal/adapter/codex"
 	"github.com/ivyliu1201/context-compactor/internal/benchmark"
 	"github.com/ivyliu1201/context-compactor/internal/journal"
 	"github.com/ivyliu1201/context-compactor/internal/management"
+	"github.com/ivyliu1201/context-compactor/internal/protocol"
 	compactruntime "github.com/ivyliu1201/context-compactor/internal/runtime"
 )
 
 func TestMain(testMain *testing.M) {
+	if os.Getenv("CONTEXT_COMPACTOR_FAKE_HOST_MODEL") == "1" &&
+		len(os.Args) > 1 &&
+		os.Args[1] == "exec" {
+		if err := runFakeCodexModelCLI(os.Args[2:], os.Stdin); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && isTestCLICommand(os.Args[1]) {
 		err := run(
 			context.Background(),
@@ -57,6 +68,7 @@ func isTestCLICommand(value string) bool {
 
 func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.T) {
 	originalLauncherFactory := hookWorkerLauncherFactory
+	originalMemoryModelFactory := memoryModelFactory
 	hookWorkerLauncherFactory = func(
 		io.Writer,
 		func() time.Time,
@@ -68,7 +80,18 @@ func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.
 			return compactruntime.WorkerLaunchResult{Launched: true}, nil
 		})
 	}
-	t.Cleanup(func() { hookWorkerLauncherFactory = originalLauncherFactory })
+	memoryModelFactory = func() compactruntime.MemoryModel {
+		return compactruntime.MemoryModelFunc(func(
+			_ context.Context,
+			call compactruntime.ModelCall,
+		) (string, error) {
+			return fakeMemoryModelResponse(call.Prompt)
+		})
+	}
+	t.Cleanup(func() {
+		hookWorkerLauncherFactory = originalLauncherFactory
+		memoryModelFactory = originalMemoryModelFactory
+	})
 
 	now := time.Date(2026, 7, 23, 8, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -88,7 +111,7 @@ func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.
 					"hook_event_name": "UserPromptSubmit",
 					"model":           "test-model",
 					"permission_mode": "default",
-					"prompt":          "[context-compactor] task: Verify Codex executable runtime.",
+					"prompt":          "Track verifying the Codex executable runtime as a project task.",
 				}
 			},
 		},
@@ -102,7 +125,7 @@ func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.
 					"cwd":             root,
 					"permission_mode": "default",
 					"hook_event_name": "UserPromptSubmit",
-					"prompt":          "[context-compactor] task: Verify Claude executable runtime.",
+					"prompt":          "Track verifying the Claude executable runtime as a project task.",
 				}
 			},
 		},
@@ -127,9 +150,8 @@ func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.
 			if err != nil {
 				t.Fatalf("hook run() error = %v, diagnostics = %q", err, diagnostics.String())
 			}
-			if !strings.Contains(output.String(), "Verify ") ||
-				strings.Contains(output.String(), "transcript_path") {
-				t.Fatalf("hook output = %q", output.String())
+			if output.Len() != 0 {
+				t.Fatalf("first hook output = %q, want background extraction", output.String())
 			}
 
 			if err := run(
@@ -172,6 +194,29 @@ func TestExecutableHookRuntimeSupportsCodexAndClaudeAndRefreshWorker(t *testing.
 	}
 }
 
+func TestParsePrivacyModeUsesOneStandardPolicy(t *testing.T) {
+	for _, value := range []string{"standard", " STANDARD ", "balanced"} {
+		mode, err := parsePrivacyMode(value)
+		if err != nil {
+			t.Fatalf("parsePrivacyMode(%q) error = %v", value, err)
+		}
+		if mode != protocol.PrivacyStandard {
+			t.Fatalf(
+				"parsePrivacyMode(%q) = %q, want %q",
+				value,
+				mode,
+				protocol.PrivacyStandard,
+			)
+		}
+	}
+
+	for _, value := range []string{"strict", "audit", "unknown"} {
+		if _, err := parsePrivacyMode(value); err == nil {
+			t.Fatalf("parsePrivacyMode(%q) error = nil, want rejection", value)
+		}
+	}
+}
+
 func TestExecutableHookAutomaticallyDrainsPublishesAndInjectsNextTurn(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "project root with spaces")
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -185,7 +230,7 @@ func TestExecutableHookAutomaticallyDrainsPublishesAndInjectsNextTurn(t *testing
 		"hook_event_name": "UserPromptSubmit",
 		"model":           "phase1-test-model",
 		"permission_mode": "default",
-		"prompt":          "[context-compactor] task: Prove detached worker closure.",
+		"prompt":          "Track proving the detached worker closure as a project task.",
 	})
 	hookStartedAt := time.Now()
 	firstOutput, firstDiagnostics, firstDuration, err := runTestCLI(
@@ -206,9 +251,8 @@ func TestExecutableHookAutomaticallyDrainsPublishesAndInjectsNextTurn(t *testing
 	if firstDiagnostics != "" {
 		t.Fatalf("first hook diagnostics = %q", firstDiagnostics)
 	}
-	firstContext := decodeCodexContext(t, firstOutput)
-	if !strings.Contains(firstContext, "Prove detached worker closure.") {
-		t.Fatalf("first additionalContext = %q", firstContext)
+	if len(firstOutput) != 0 {
+		t.Fatalf("first hook stdout = %q, want background extraction", firstOutput)
 	}
 	if firstDuration >= 10*time.Second {
 		t.Fatalf("first hook duration = %s, want detached foreground return", firstDuration)
@@ -220,6 +264,10 @@ func TestExecutableHookAutomaticallyDrainsPublishesAndInjectsNextTurn(t *testing
 			health.ProcessedJobs == 1 &&
 			health.PublishedJobs == 1 &&
 			health.Attempts == 1 &&
+			health.PendingMemoryJobs == 0 &&
+			health.ProcessingMemoryJobs == 0 &&
+			health.CompletedMemoryJobs == 1 &&
+			health.MemoryAttempts == 1 &&
 			health.PublishedCapsules == 1 &&
 			health.WorkerStarted &&
 			!health.WorkerRunning &&
@@ -255,7 +303,7 @@ func TestExecutableHookAutomaticallyDrainsPublishesAndInjectsNextTurn(t *testing
 		t.Fatalf("next hook diagnostics = %q", nextDiagnostics)
 	}
 	nextContext := decodeCodexContext(t, nextOutput)
-	if !strings.Contains(nextContext, "Prove detached worker closure.") {
+	if !strings.Contains(nextContext, "detached worker closure") {
 		t.Fatalf("next additionalContext = %q", nextContext)
 	}
 
@@ -263,17 +311,21 @@ func TestExecutableHookAutomaticallyDrainsPublishesAndInjectsNextTurn(t *testing
 		return health.Events == 2 &&
 			health.PendingJobs == 0 &&
 			health.ProcessingJobs == 0 &&
-			health.ProcessedJobs == 2 &&
-			health.PublishedJobs == 2 &&
+			health.ProcessedJobs == 1 &&
+			health.PublishedJobs == 1 &&
 			health.DiscardedJobs == 0 &&
-			health.Attempts == 2 &&
+			health.Attempts == 1 &&
+			health.PendingMemoryJobs == 0 &&
+			health.ProcessingMemoryJobs == 0 &&
+			health.CompletedMemoryJobs == 1 &&
+			health.MemoryAttempts == 1 &&
 			health.Operations == 1 &&
 			health.Records == 1 &&
 			health.PublishedCapsules == 1 &&
 			health.WorkerState == "idle"
 	})
 	t.Logf(
-		"phase1_evidence events=%d pending=%d processed=%d failed=%d attempts=%d operations=%d records=%d published_capsules=%d discarded_jobs=%d first_publish_latency=%s injected_bytes=%d first_hook_duration=%s first_worker_state=%s",
+		"automatic_memory_evidence events=%d pending=%d processed=%d failed=%d attempts=%d operations=%d records=%d published_capsules=%d discarded_jobs=%d first_publish_latency=%s injected_bytes=%d first_hook_duration=%s first_worker_state=%s",
 		finalHealth.Events,
 		finalHealth.PendingJobs,
 		finalHealth.ProcessedJobs,
@@ -288,6 +340,175 @@ func TestExecutableHookAutomaticallyDrainsPublishesAndInjectsNextTurn(t *testing
 		firstDuration,
 		firstHealth.WorkerState,
 	)
+}
+
+func TestExecutableHookExplanationCompletesNoChangeWithoutRefresh(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "explanation project")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("create project root: %v", err)
+	}
+	payload := marshalHookPayload(t, map[string]any{
+		"session_id":      "explanation-session",
+		"turn_id":         "explanation-turn-1",
+		"transcript_path": nil,
+		"cwd":             root,
+		"hook_event_name": "UserPromptSubmit",
+		"model":           "phase2-test-model",
+		"permission_mode": "default",
+		"prompt":          "請解釋這個 reducer 的用途",
+	})
+
+	output, diagnostics, _, err := runTestCLI(
+		payload,
+		"hook",
+		"--host",
+		"codex",
+		"--project-root",
+		root,
+	)
+	if err != nil {
+		t.Fatalf(
+			"explanation hook subprocess error = %v, diagnostics = %q",
+			err,
+			diagnostics,
+		)
+	}
+	if diagnostics != "" {
+		t.Fatalf("explanation hook diagnostics = %q", diagnostics)
+	}
+	if len(output) != 0 {
+		t.Fatalf("explanation hook stdout = %q, want zero bytes", output)
+	}
+
+	health := waitForRuntimeHealth(t, root, func(health journal.RuntimeHealth) bool {
+		return health.Events == 1 &&
+			health.PendingMemoryJobs == 0 &&
+			health.ProcessingMemoryJobs == 0 &&
+			health.CompletedMemoryJobs == 1 &&
+			health.MemoryAttempts == 1 &&
+			health.Operations == 0 &&
+			health.Records == 0 &&
+			health.PendingJobs == 0 &&
+			health.ProcessedJobs == 0 &&
+			health.PublishedCapsules == 0 &&
+			health.WorkerState == "idle"
+	})
+	if health.FailedMemoryJobs != 0 || health.FailedJobs != 0 {
+		t.Fatalf("explanation health = %+v, want no failures", health)
+	}
+}
+
+func TestExecutableHookRedactsPromptBeforeAutomaticMemoryWork(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "redaction project")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("create project root: %v", err)
+	}
+	const secret = "example-credential-value"
+	payload := marshalHookPayload(t, map[string]any{
+		"session_id":      "redaction-session",
+		"turn_id":         "redaction-turn-1",
+		"transcript_path": nil,
+		"cwd":             root,
+		"hook_event_name": "UserPromptSubmit",
+		"model":           "phase2-test-model",
+		"permission_mode": "default",
+		"prompt":          "Use UTC timestamps. token=" + secret,
+	})
+	decoded, err := codexadapter.DecodeHook(
+		bytes.NewReader(payload),
+		time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("DecodeHook() error = %v", err)
+	}
+
+	output, diagnostics, _, err := runTestCLI(
+		payload,
+		"hook",
+		"--host",
+		"codex",
+		"--project-root",
+		root,
+	)
+	if err != nil {
+		t.Fatalf(
+			"redaction hook subprocess error = %v, diagnostics = %q",
+			err,
+			diagnostics,
+		)
+	}
+	if diagnostics != "" {
+		t.Fatalf("redaction hook diagnostics = %q", diagnostics)
+	}
+	if len(output) != 0 {
+		t.Fatalf("redaction hook stdout = %q, want background work", output)
+	}
+	waitForRuntimeHealth(t, root, func(health journal.RuntimeHealth) bool {
+		return health.CompletedMemoryJobs == 1 &&
+			health.MemoryAttempts == 1 &&
+			health.Operations == 1 &&
+			health.Records == 1 &&
+			health.PublishedCapsules == 1 &&
+			health.WorkerState == "idle"
+	})
+
+	store, err := journal.Open(
+		context.Background(),
+		journal.OpenOptions{ProjectRoot: root},
+	)
+	if err != nil {
+		t.Fatalf("journal.Open() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	job, found, err := store.LoadMemoryExtractionJob(
+		context.Background(),
+		decoded.Event.ID,
+	)
+	if err != nil || !found {
+		t.Fatalf(
+			"LoadMemoryExtractionJob() found = %t, error = %v",
+			found,
+			err,
+		)
+	}
+	if strings.Contains(job.Prompt, secret) ||
+		!strings.Contains(job.Prompt, "[REDACTED]") ||
+		job.RedactionCount != 1 {
+		t.Fatalf("stored redacted job = %+v", job)
+	}
+	snapshot, found, err := store.LoadMemoryView(context.Background())
+	if err != nil || !found {
+		t.Fatalf("LoadMemoryView() found = %t, error = %v", found, err)
+	}
+	for _, item := range snapshot.View.Records {
+		if strings.Contains(item.Record.Value, secret) ||
+			strings.Contains(item.Record.Source.Evidence, secret) {
+			t.Fatalf("memory contains unredacted prompt material: %+v", item)
+		}
+	}
+}
+
+func TestHookSkipsMemoryWorkerChildProcess(t *testing.T) {
+	t.Setenv(compactruntime.MemoryWorkerChildEnvironment, "1")
+	var output, diagnostics bytes.Buffer
+	err := run(
+		context.Background(),
+		[]string{"hook"},
+		strings.NewReader("not hook JSON"),
+		&output,
+		&diagnostics,
+		func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		t.Fatalf("worker-child hook error = %v", err)
+	}
+	if output.Len() != 0 || diagnostics.Len() != 0 {
+		t.Fatalf(
+			"worker-child output = %q, diagnostics = %q",
+			output.String(),
+			diagnostics.String(),
+		)
+	}
 }
 
 func TestExecutableHookSuppressesEmptyContextWithoutStdout(t *testing.T) {
@@ -321,7 +542,8 @@ func TestExecutableHookSuppressesEmptyContextWithoutStdout(t *testing.T) {
 	waitForRuntimeHealth(t, root, func(health journal.RuntimeHealth) bool {
 		return health.PendingJobs == 0 &&
 			health.ProcessingJobs == 0 &&
-			health.ProcessedJobs == 1 &&
+			health.ProcessedJobs == 0 &&
+			health.PendingMemoryJobs == 0 &&
 			health.EmptyContextSuppressions == 1 &&
 			health.WorkerState == "idle"
 	})
@@ -597,12 +819,165 @@ func runTestCLI(
 	}
 	command := exec.Command(executable, arguments...)
 	command.Stdin = bytes.NewReader(input)
+	command.Env = append(
+		os.Environ(),
+		"CONTEXT_COMPACTOR_CODEX_COMMAND="+executable,
+		"CONTEXT_COMPACTOR_FAKE_HOST_MODEL=1",
+	)
 	var output, diagnostics bytes.Buffer
 	command.Stdout = &output
 	command.Stderr = &diagnostics
 	startedAt := time.Now()
 	err = command.Run()
 	return output.Bytes(), diagnostics.String(), time.Since(startedAt), err
+}
+
+func runFakeCodexModelCLI(arguments []string, input io.Reader) error {
+	outputPath := ""
+	for index := 0; index+1 < len(arguments); index++ {
+		if arguments[index] == "--output-last-message" {
+			outputPath = arguments[index+1]
+			break
+		}
+	}
+	if outputPath == "" {
+		return fmt.Errorf("fake Codex model output path is required")
+	}
+	prompt, err := io.ReadAll(input)
+	if err != nil {
+		return fmt.Errorf("read fake Codex model prompt: %w", err)
+	}
+	response, err := fakeMemoryModelResponse(string(prompt))
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(outputPath, []byte(response), 0o600); err != nil {
+		return fmt.Errorf("write fake Codex model response: %w", err)
+	}
+	return nil
+}
+
+func fakeMemoryModelResponse(prompt string) (string, error) {
+	sourceEventID, err := extractPromptJSONString(prompt, `"source_event_id":`)
+	if err != nil {
+		return "", err
+	}
+	createdAtText, err := extractPromptJSONString(prompt, `"created_at":`)
+	if err != nil {
+		return "", err
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, createdAtText)
+	if err != nil {
+		return "", fmt.Errorf("parse fake model created_at: %w", err)
+	}
+	userPrompt, err := extractPromptBlockJSON(
+		prompt,
+		"<USER_PROMPT_JSON>",
+		"</USER_PROMPT_JSON>",
+	)
+	if err != nil {
+		return "", err
+	}
+	lowerPrompt := strings.ToLower(strings.TrimSpace(userPrompt))
+	if strings.HasPrefix(lowerPrompt, "explain") ||
+		strings.HasPrefix(lowerPrompt, "please explain") ||
+		strings.HasPrefix(lowerPrompt, "請解釋") {
+		encoded, encodeErr := json.Marshal(protocol.ExtractionResult{
+			Protocol: protocol.Version,
+			Outcome:  protocol.OutcomeNoChange,
+		})
+		return string(encoded), encodeErr
+	}
+	idSeed, err := extractPromptIDSeed(prompt)
+	if err != nil {
+		return "", err
+	}
+
+	evidence := userPrompt
+	if len([]rune(evidence)) > 120 {
+		evidence = string([]rune(evidence)[:120])
+	}
+	update := protocol.MemoryUpdate{
+		Protocol:      protocol.Version,
+		PrivacyMode:   protocol.PrivacyStandard,
+		SourceEventID: sourceEventID,
+		CreatedAt:     createdAt,
+		Operations: []protocol.Operation{{
+			ID:   "operation-" + idSeed + "-test",
+			Kind: protocol.OperationAdd,
+			Record: &protocol.MemoryRecord{
+				ID:         "record-" + idSeed + "-test",
+				Kind:       protocol.MemoryTask,
+				Value:      userPrompt,
+				Priority:   protocol.PriorityHigh,
+				Confidence: protocol.ConfidenceExplicit,
+				Status:     protocol.StatusActive,
+				Source: protocol.SourceReference{
+					EventID:  sourceEventID,
+					Evidence: evidence,
+				},
+				CreatedAt: createdAt,
+			},
+		}},
+	}
+	encoded, err := json.Marshal(protocol.ExtractionResult{
+		Protocol:     protocol.Version,
+		Outcome:      protocol.OutcomeMemoryUpdate,
+		MemoryUpdate: &update,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode fake memory model response: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func extractPromptIDSeed(prompt string) (string, error) {
+	const marker = `Use operation IDs beginning "operation-`
+	start := strings.Index(prompt, marker)
+	if start < 0 {
+		return "", fmt.Errorf("fake model prompt is missing operation ID seed")
+	}
+	start += len(marker)
+	end := strings.Index(prompt[start:], `-"`)
+	if end <= 0 {
+		return "", fmt.Errorf("fake model prompt has an invalid operation ID seed")
+	}
+	return prompt[start : start+end], nil
+}
+
+func extractPromptJSONString(prompt string, marker string) (string, error) {
+	index := strings.Index(prompt, marker)
+	if index < 0 {
+		return "", fmt.Errorf("fake model prompt is missing %s", marker)
+	}
+	decoder := json.NewDecoder(strings.NewReader(prompt[index+len(marker):]))
+	var value string
+	if err := decoder.Decode(&value); err != nil {
+		return "", fmt.Errorf("decode fake model %s: %w", marker, err)
+	}
+	return value, nil
+}
+
+func extractPromptBlockJSON(
+	prompt string,
+	startMarker string,
+	endMarker string,
+) (string, error) {
+	start := strings.Index(prompt, startMarker)
+	if start < 0 {
+		return "", fmt.Errorf("fake model prompt is missing %s", startMarker)
+	}
+	start += len(startMarker)
+	end := strings.Index(prompt[start:], endMarker)
+	if end < 0 {
+		return "", fmt.Errorf("fake model prompt is missing %s", endMarker)
+	}
+	raw := strings.TrimSpace(prompt[start : start+end])
+	var value string
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return "", fmt.Errorf("decode fake model user prompt: %w", err)
+	}
+	return value, nil
 }
 
 func decodeCodexContext(t *testing.T, output []byte) string {

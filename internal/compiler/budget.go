@@ -57,6 +57,19 @@ type CompiledContext struct {
 	Limits                   BudgetLimits
 }
 
+type ReadyContext = CompiledContext
+
+// BuildContext selects the bounded records ready for foreground rendering or
+// background publication. CompileBudgeted remains the compatibility name.
+func BuildContext(
+	memory reducer.CurrentMemory,
+	query string,
+	limits BudgetLimits,
+	counter CounterProfile,
+) (ReadyContext, error) {
+	return CompileBudgeted(memory, query, limits, counter)
+}
+
 // CompileBudgeted reserves mandatory state against the hard limit, then adds
 // deterministically ranked optional records while the target allows. The token
 // counter must include each record's rendered category and separator overhead;

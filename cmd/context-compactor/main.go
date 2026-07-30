@@ -36,6 +36,7 @@ var (
 	benchmarkModelInvoker          = commandForegroundModelInvoker
 	benchmarkRepositoryFingerprint = currentRepositoryFingerprint
 	hookWorkerLauncherFactory      = defaultHookWorkerLauncher
+	memoryModelFactory             = defaultMemoryModel
 )
 
 func main() {
@@ -94,6 +95,9 @@ func runHook(
 	diagnostics io.Writer,
 	now func() time.Time,
 ) error {
+	if os.Getenv(compactruntime.MemoryWorkerChildEnvironment) == "1" {
+		return nil
+	}
 	flags := flag.NewFlagSet("hook", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
 	hostName := flags.String("host", "", "hook host: codex or claude")
@@ -110,8 +114,8 @@ func runHook(
 	)
 	privacyName := flags.String(
 		"privacy",
-		string(protocol.PrivacyBalanced),
-		"privacy mode: strict, balanced, or audit",
+		"standard",
+		"privacy policy: standard",
 	)
 	limits := bindBudgetFlags(flags)
 	if err := flags.Parse(args); err != nil {
@@ -132,15 +136,15 @@ func runHook(
 		return fmt.Errorf("runtime clock is required")
 	}
 	handler := compactruntime.LocalHookHandler{
-		ProjectRoot:     *projectRoot,
-		DatabasePath:    *databasePath,
-		RepositoryScope: *scope,
-		PrivacyMode:     privacyMode,
-		Extractor:       compactruntime.DirectiveExtractor{},
-		Limits:          *limits,
-		Launcher:        hookWorkerLauncherFactory(diagnostics, now),
-		RefreshLease:    compactruntime.DefaultRefreshLease,
-		Diagnostics:     diagnostics,
+		ProjectRoot:         *projectRoot,
+		DatabasePath:        *databasePath,
+		RepositoryScope:     *scope,
+		PrivacyMode:         privacyMode,
+		PromptPolicyVersion: compactruntime.MemoryPromptPolicyVersion,
+		Limits:              *limits,
+		Launcher:            hookWorkerLauncherFactory(diagnostics, now),
+		RefreshLease:        compactruntime.DefaultRefreshLease,
+		Diagnostics:         diagnostics,
 	}
 	return compactruntime.ExecuteHook(
 		ctx,
@@ -169,8 +173,8 @@ func runRefreshWorker(
 	)
 	privacyName := flags.String(
 		"privacy",
-		string(protocol.PrivacyBalanced),
-		"privacy mode used by legacy v3 jobs",
+		"standard",
+		"privacy policy used by legacy v3 jobs",
 	)
 	lease := flags.Duration(
 		"lease",
@@ -312,7 +316,23 @@ func runRefreshWorker(
 		return err
 	}
 
-	worker := compactruntime.RefreshWorker{
+	codexModels, claudeModels := configuredMemoryModels()
+	memoryWorker := compactruntime.BackgroundMemoryWorker{
+		Jobs: store,
+		DecisionMaker: compactruntime.NaturalLanguageExtractor{
+			Model:        memoryModelFactory(),
+			CodexModels:  codexModels,
+			ClaudeModels: claudeModels,
+		},
+		ProjectRoot:          store.ProjectRoot(),
+		RepositoryScope:      strings.TrimSpace(*scope),
+		RefreshConfiguration: configuration,
+		LeaseDuration:        *lease,
+		RetryDelay:           compactruntime.DefaultRetryDelay,
+		MaxAttempts:          compactruntime.DefaultMaxMemoryJobAttempts,
+		Now:                  now,
+	}
+	refreshWorker := compactruntime.RefreshWorker{
 		Queue:         store,
 		Snapshots:     store,
 		LeaseDuration: *lease,
@@ -327,12 +347,12 @@ func runRefreshWorker(
 			*workerLease,
 			now,
 		)
-		var workErr error
-		if *drain {
-			_, workErr = worker.Drain(ctx)
-		} else {
-			_, workErr = worker.ProcessNext(ctx)
-		}
+		workErr := processRepositoryWork(
+			ctx,
+			memoryWorker,
+			refreshWorker,
+			*drain,
+		)
 		stopHeartbeat()
 		if heartbeatErr := <-heartbeatError; heartbeatErr != nil && workErr == nil {
 			workErr = heartbeatErr
@@ -383,6 +403,35 @@ func runRefreshWorker(
 	}
 }
 
+func processRepositoryWork(
+	ctx context.Context,
+	memoryWorker compactruntime.BackgroundMemoryWorker,
+	refreshWorker compactruntime.RefreshWorker,
+	drain bool,
+) error {
+	var memoryErr error
+	var refreshErr error
+	if drain {
+		_, memoryErr = memoryWorker.Drain(ctx)
+		_, refreshErr = refreshWorker.Drain(ctx)
+	} else {
+		_, memoryErr = memoryWorker.ProcessNext(ctx)
+		_, refreshErr = refreshWorker.ProcessNext(ctx)
+	}
+	switch {
+	case memoryErr != nil && refreshErr != nil:
+		return fmt.Errorf(
+			"memory work failed: %v; capsule refresh failed: %w",
+			memoryErr,
+			refreshErr,
+		)
+	case memoryErr != nil:
+		return memoryErr
+	default:
+		return refreshErr
+	}
+}
+
 func defaultHookWorkerLauncher(
 	_ io.Writer,
 	now func() time.Time,
@@ -392,6 +441,36 @@ func defaultHookWorkerLauncher(
 		Now:         now,
 		WorkerLease: compactruntime.DefaultWorkerLease,
 	}
+}
+
+func defaultMemoryModel() compactruntime.MemoryModel {
+	return compactruntime.HostModelRunner{
+		CodexExecutable:    strings.TrimSpace(os.Getenv("CONTEXT_COMPACTOR_CODEX_COMMAND")),
+		ClaudeExecutable:   strings.TrimSpace(os.Getenv("CONTEXT_COMPACTOR_CLAUDE_COMMAND")),
+		CodexReasoning:     strings.TrimSpace(os.Getenv("CONTEXT_COMPACTOR_CODEX_REASONING")),
+		UseAnthropicAPIKey: os.Getenv("CONTEXT_COMPACTOR_USE_ANTHROPIC_API_KEY") == "1",
+	}
+}
+
+func configuredMemoryModels() (
+	compactruntime.ModelPair,
+	compactruntime.ModelPair,
+) {
+	return compactruntime.ModelPair{
+			Routine: strings.TrimSpace(
+				os.Getenv("CONTEXT_COMPACTOR_CODEX_ROUTINE_MODEL"),
+			),
+			Repair: strings.TrimSpace(
+				os.Getenv("CONTEXT_COMPACTOR_CODEX_REPAIR_MODEL"),
+			),
+		}, compactruntime.ModelPair{
+			Routine: strings.TrimSpace(
+				os.Getenv("CONTEXT_COMPACTOR_CLAUDE_ROUTINE_MODEL"),
+			),
+			Repair: strings.TrimSpace(
+				os.Getenv("CONTEXT_COMPACTOR_CLAUDE_REPAIR_MODEL"),
+			),
+		}
 }
 
 func startRefreshWorkerHeartbeat(
@@ -789,12 +868,11 @@ func parseHost(value string) (compactruntime.Host, error) {
 }
 
 func parsePrivacyMode(value string) (protocol.PrivacyMode, error) {
-	mode := protocol.PrivacyMode(strings.ToLower(strings.TrimSpace(value)))
-	switch mode {
-	case protocol.PrivacyStrict, protocol.PrivacyBalanced, protocol.PrivacyAudit:
-		return mode, nil
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "standard", string(protocol.PrivacyBalanced):
+		return protocol.PrivacyStandard, nil
 	default:
-		return "", fmt.Errorf("unsupported privacy mode %q", value)
+		return "", fmt.Errorf("privacy policy must be standard")
 	}
 }
 

@@ -81,13 +81,34 @@ func (store *Store) EnqueueCapsuleRefresh(
 	ctx context.Context,
 	request CapsuleRefreshRequest,
 ) (string, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin capsule refresh enqueue: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	jobID, err := enqueueCapsuleRefreshInTransaction(ctx, tx, request)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit capsule refresh enqueue: %w", err)
+	}
+	return jobID, nil
+}
+
+func enqueueCapsuleRefreshInTransaction(
+	ctx context.Context,
+	tx *sql.Tx,
+	request CapsuleRefreshRequest,
+) (string, error) {
 	scope, err := validateCapsuleRefreshRequest(request)
 	if err != nil {
 		return "", err
 	}
 	jobID := capsuleRefreshJobID(scope, request)
 
-	if _, err := store.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 INSERT INTO capsule_refresh_jobs (
     job_id, repository_scope, trigger, source_event_seq,
     source_operation_seq, source_view_digest, status, attempt_count,
@@ -117,7 +138,7 @@ ON CONFLICT(job_id) DO NOTHING`,
 	var policyVersion, counterIdentity string
 	var eventSeq, operationSeq int64
 	var targetBudget, triggerBudget, hardBudget int
-	if err := store.db.QueryRowContext(ctx, `
+	if err := tx.QueryRowContext(ctx, `
 SELECT repository_scope, trigger, source_event_seq, source_operation_seq,
        source_view_digest, enqueued_at, privacy_mode, target_budget,
        trigger_budget, hard_budget, compiler_policy_version,
@@ -191,9 +212,15 @@ FROM capsule_refresh_jobs
 WHERE (
         status = 'pending'
         AND retryable = 1
-        AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+        AND (
+            next_attempt_at IS NULL
+            OR julianday(next_attempt_at) <= julianday(?)
+        )
       )
-   OR (status = 'processing' AND lease_until <= ?)
+   OR (
+        status = 'processing'
+        AND julianday(lease_until) <= julianday(?)
+      )
 ORDER BY source_operation_seq, source_event_seq, job_id
 LIMIT 1`,
 		formatTime(now),
@@ -244,7 +271,10 @@ SET status = 'processing',
 WHERE job_id = ?
   AND (
         (status = 'pending' AND retryable = 1)
-        OR (status = 'processing' AND lease_until <= ?)
+        OR (
+            status = 'processing'
+            AND julianday(lease_until) <= julianday(?)
+        )
       )`,
 		formatTime(leaseUntil),
 		formatTime(now),

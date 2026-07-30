@@ -28,6 +28,17 @@ func DecodeMutationBatch(reader io.Reader) (MutationBatch, error) {
 	return batch, nil
 }
 
+func DecodeExtractionResult(reader io.Reader) (ExtractionResult, error) {
+	result, err := decodeStrict[ExtractionResult](reader)
+	if err != nil {
+		return ExtractionResult{}, fmt.Errorf("decode extraction result: %w", err)
+	}
+	if err := ValidateExtractionResult(result); err != nil {
+		return ExtractionResult{}, err
+	}
+	return result, nil
+}
+
 func decodeStrict[T any](reader io.Reader) (T, error) {
 	var value T
 	decoder := json.NewDecoder(reader)

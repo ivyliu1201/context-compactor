@@ -13,7 +13,8 @@ precedence over generated memory.
 ## 2. MVP goals
 
 1. Normalize agent events behind a versioned protocol.
-2. Persist a bounded event journal without complete prompts by default.
+2. Persist a bounded, redacted prompt extraction queue under one standard
+   privacy policy.
 3. Apply validated incremental memory operations through a deterministic
    reducer.
 4. Detect contradictions, superseded decisions, and stale working state.
@@ -30,7 +31,7 @@ precedence over generated memory.
 - Cloud synchronization or a hosted dashboard.
 - A mandatory vector database or embedding provider.
 - Treating generated memory as a replacement for repository inspection.
-- Silently retaining complete prompts in the default privacy mode.
+- Retaining unredacted or unbounded prompts.
 - Supporting every agent framework before the core contract is stable.
 
 ## 4. Architecture
@@ -38,12 +39,13 @@ precedence over generated memory.
 ```text
 agent hook
   -> normalized transient event
-  -> privacy filter and bounded event journal
-  -> candidate memory operations
+  -> privacy filter and bounded extraction job
+  -> detached repository worker
+  -> model-assisted memory decision
+  -> candidate memory operations or no change
   -> deterministic validation and reducer
   -> materialized memory view
   -> durable refresh queue
-  -> detached repository worker
   -> verified capsule publication
   -> relevance and token-budget compiler
   -> agent adapter injection
@@ -54,25 +56,28 @@ or Markdown output will be generated views that can be rebuilt from validated
 records.
 
 The local journal uses the driver and foundational Schema v1 rules recorded in
-`docs/adr/0001-sqlite-event-journal.md`. The current additive Schema v4 retains
+`docs/adr/0001-sqlite-event-journal.md`. The current additive Schema v5 retains
 those tables and adds durable refresh configuration, attempt and failure
 diagnostics, a repository worker lease, and runtime metrics. Migrations run in
 one transaction, are checksum-idempotent, and must preserve existing rows. In
-the default schema, extraction runs while transient content is available and
-only event metadata plus validated memory operations are durable. This avoids
-retaining complete prompts merely to support later background extraction.
+the standard schema, a redacted and bounded prompt is retained in a separate
+extraction job with an expiry. The detached repository worker converts that
+job into either `no_change` or validated memory operations. Prompt jobs are
+never rendered into compiled context.
 
-## 5. Privacy modes
+## 5. Standard privacy policy
 
-| Mode | Durable content | Default |
-|---|---|---|
-| `strict` | Structured facts and source event identifiers; no evidence text | No |
-| `balanced` | Structured facts and bounded, redacted evidence spans | Yes |
-| `audit` | Explicit opt-in content retention with a configured retention policy | No |
+Production uses one `standard` policy. Its version 1 wire value remains
+`balanced` so existing databases and protocol payloads remain readable.
+Legacy `strict` and `audit` values remain decode-only compatibility data and
+are not selectable for new production work.
 
-Complete prompt content may enter a transient normalization pipeline, but the
-default durable protocol contains no full-prompt field. Unknown JSON fields are
-rejected so callers cannot silently add one.
+The standard policy may retain only a secret-redacted prompt bounded to 8,000
+Unicode characters, seven days, and 500 extraction jobs per repository.
+The bounded prompt field remains outside event rows and is never rendered
+directly into materialized memory or verified capsules. Only validated durable
+facts and bounded evidence may become memory. Unknown protocol fields remain
+rejected.
 
 ## 6. Protocol contract
 
@@ -92,9 +97,28 @@ A normalized event includes:
 Transient content is input to extraction and redaction. It is not automatically
 eligible for persistence.
 
-### 6.2 Memory mutation batch
+### 6.2 Extraction result
 
-A candidate extractor returns operations, not a replacement state document.
+A model-assisted extractor returns exactly one result:
+
+- `no_change`: the prompt does not establish project memory
+- `memory_update`: a validated incremental memory update is present
+
+Questions asking for an explanation, general conversation, and instructions
+that do not affect the project return `no_change`. A `no_change` result cannot
+contain an update. A `memory_update` result must contain a complete valid
+update. Strict decoding rejects unknown fields, and model output never bypasses
+the deterministic validator.
+
+The extraction request and result retain source event, model, and prompt-policy
+versions for operational traceability. They do not make generated memory
+authoritative over the user's latest instruction, repository files, or
+verification results.
+
+### 6.3 Memory update
+
+An accepted memory update contains operations, not a replacement state
+document.
 Supported initial operations are:
 
 - `add`: introduce a new typed memory record
@@ -112,7 +136,7 @@ may omit it.
 Critical records cannot be based only on inferred confidence. They require an
 explicit user statement or repository verification.
 
-### 6.3 Materialized memory view
+### 6.4 Materialized memory view
 
 The deterministic reducer applies durable operations in journal order and
 creates a rebuildable view. Materialized lifecycle states are `active`,
@@ -238,14 +262,16 @@ validated operations without waiting for the refresh result.
 
 Capsule generation is derived work: the MVP compiler must produce it
 deterministically from validated records and must never replace repository
-inspection. Nondeterministic model-generated consolidation is outside this
-contract until its output, source links, model and prompt-policy versions, and
-validation can be durably reproduced.
+inspection. Model assistance is limited to proposing `no_change` or a typed
+memory update. Its output, source links, model and prompt-policy versions, and
+validation outcome must be durably traceable. The model cannot overwrite the
+materialized view or generate the published capsule.
 
-Complete prompts remain transient. Any extraction needed for later compaction
-must occur while transient content is available; background work consumes
-validated structured records and bounded privacy-mode evidence, not a newly
-persisted prompt transcript.
+The detached repository worker consumes bounded extraction jobs before capsule
+refresh jobs. Failed model output is retried through the durable queue; a
+successful `no_change` result creates no memory operation and no capsule
+refresh. A refresh is enqueued only when accepted operations change the
+materialized memory revision.
 
 ### 7.2 Overflow behavior
 
@@ -293,19 +319,19 @@ runtime must:
 
 1. read exactly one host hook payload from standard input and decode it through
    the matching thin adapter
-2. run privacy filtering and extraction while transient content is available,
-   producing only validated protocol operations for durable storage
-3. idempotently append durable event metadata and operations, then load or
-   rebuild the repository-scoped memory view
+2. redact and bound user-prompt content, then atomically append event metadata
+   and a durable extraction job
+3. launch or notify the detached repository worker without waiting for model
+   extraction
 4. supply the last verified capsule plus newer validated operations to the
    foreground path and emit only output supported by that host event
 
 The runtime must preserve the transcript-compaction owner negotiated by the
 adapter and must not read transcript contents merely because a hook supplies a
-transcript path. Complete prompts remain transient under the selected privacy
-mode. Standard output is reserved for the host protocol; diagnostics go to
-standard error and must not expose prompts, transcript paths, secrets, or
-generated capsule contents.
+transcript path. Bounded extraction prompts are never written to standard
+output or diagnostics. Standard output is reserved for the host protocol;
+diagnostics go to standard error and must not expose prompts, transcript paths,
+secrets, or generated capsule contents.
 When no active verified memory can produce a meaningful compiled context, the
 runtime exits successfully without writing any standard-output bytes. It must
 not emit an empty protocol wrapper, title, or capsule framing.

@@ -216,6 +216,10 @@ WHERE seq IN (
           SELECT 1 FROM resume_checkpoints AS checkpoint
           WHERE checkpoint.source_event_id = event.event_id
       )
+      AND NOT EXISTS (
+          SELECT 1 FROM memory_extraction_jobs AS memory_job
+          WHERE memory_job.source_event_id = event.event_id
+      )
     ORDER BY event.seq DESC
     LIMIT -1 OFFSET ?
 )`, minimumCursor.Int64, policy.MaxUnreferencedEvents)

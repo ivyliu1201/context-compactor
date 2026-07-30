@@ -426,7 +426,7 @@ ORDER BY source_operation_seq, record_id`)
 	}
 	defer rows.Close()
 
-	var records []reducer.MaterializedRecord
+	records := make([]reducer.MaterializedRecord, 0)
 	for rows.Next() {
 		var record reducer.MaterializedRecord
 		var recordID, conflictKey, kind, priority, recordJSON, sourceEventID string

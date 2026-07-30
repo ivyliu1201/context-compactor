@@ -30,6 +30,12 @@ type RuntimeHealth struct {
 	FailedJobs               int64
 	Attempts                 int64
 	PendingAttempts          int64
+	PendingMemoryJobs        int64
+	ProcessingMemoryJobs     int64
+	CompletedMemoryJobs      int64
+	FailedMemoryJobs         int64
+	MemoryAttempts           int64
+	PendingMemoryAttempts    int64
 	Operations               int64
 	Records                  int64
 	PublishedCapsules        int64
@@ -147,10 +153,11 @@ func InspectRuntimeHealth(
 			health.OldestPendingAge = 0
 		}
 	}
-	health.WorkerNotRunning = health.PendingJobs > 0 &&
-		health.PendingAttempts == 0 &&
-		health.OldestPendingAge >= WorkerNotRunningThreshold &&
-		!health.WorkerRunning
+	health.WorkerNotRunning =
+		health.PendingJobs+health.PendingMemoryJobs > 0 &&
+			health.PendingAttempts+health.PendingMemoryAttempts == 0 &&
+			health.OldestPendingAge >= WorkerNotRunningThreshold &&
+			!health.WorkerRunning
 	return health, nil
 }
 
@@ -218,6 +225,64 @@ func loadBaseRuntimeHealth(
 			}{"published capsules", "SELECT COUNT(*) FROM verified_capsules", &health.PublishedCapsules},
 		)
 	}
+	if health.SchemaVersion >= 5 {
+		queries = append(queries,
+			struct {
+				name  string
+				query string
+				value *int64
+			}{
+				"pending memory jobs",
+				"SELECT COUNT(*) FROM memory_extraction_jobs WHERE status = 'pending'",
+				&health.PendingMemoryJobs,
+			},
+			struct {
+				name  string
+				query string
+				value *int64
+			}{
+				"processing memory jobs",
+				"SELECT COUNT(*) FROM memory_extraction_jobs WHERE status = 'processing'",
+				&health.ProcessingMemoryJobs,
+			},
+			struct {
+				name  string
+				query string
+				value *int64
+			}{
+				"completed memory jobs",
+				"SELECT COUNT(*) FROM memory_extraction_jobs WHERE status = 'completed'",
+				&health.CompletedMemoryJobs,
+			},
+			struct {
+				name  string
+				query string
+				value *int64
+			}{
+				"failed memory jobs",
+				"SELECT COUNT(*) FROM memory_extraction_jobs WHERE status = 'failed'",
+				&health.FailedMemoryJobs,
+			},
+			struct {
+				name  string
+				query string
+				value *int64
+			}{
+				"memory attempts",
+				"SELECT COALESCE(SUM(attempt_count), 0) FROM memory_extraction_jobs",
+				&health.MemoryAttempts,
+			},
+			struct {
+				name  string
+				query string
+				value *int64
+			}{
+				"pending memory attempts",
+				"SELECT COALESCE(SUM(attempt_count), 0) FROM memory_extraction_jobs WHERE status = 'pending'",
+				&health.PendingMemoryAttempts,
+			},
+		)
+	}
 	for _, item := range queries {
 		if err := db.QueryRowContext(ctx, item.query).Scan(item.value); err != nil {
 			return fmt.Errorf("count runtime %s: %w", item.name, err)
@@ -225,12 +290,30 @@ func loadBaseRuntimeHealth(
 	}
 	if health.SchemaVersion >= 3 {
 		var oldest sql.NullString
-		if err := db.QueryRowContext(ctx, `
-SELECT MIN(enqueued_at)
+		query := `
+SELECT enqueued_at
 FROM capsule_refresh_jobs
-WHERE status = 'pending'`,
-		).Scan(&oldest); err != nil {
-			return fmt.Errorf("read oldest pending refresh: %w", err)
+WHERE status = 'pending'
+ORDER BY julianday(enqueued_at)
+LIMIT 1`
+		if health.SchemaVersion >= 5 {
+			query = `
+SELECT enqueued_at
+FROM (
+    SELECT enqueued_at
+    FROM capsule_refresh_jobs
+    WHERE status = 'pending'
+    UNION ALL
+    SELECT enqueued_at
+    FROM memory_extraction_jobs
+    WHERE status = 'pending'
+) AS pending_work
+ORDER BY julianday(enqueued_at)
+LIMIT 1`
+		}
+		err := db.QueryRowContext(ctx, query).Scan(&oldest)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("read oldest pending worker job: %w", err)
 		}
 		if oldest.Valid {
 			value, err := parseTime(oldest.String)

@@ -21,12 +21,14 @@ type AppendRequest struct {
 	PrivacyMode    protocol.PrivacyMode
 	RedactionCount int
 	Batch          *protocol.MutationBatch
+	MemoryJob      *MemoryJobRequest
 }
 
 type AppendResult struct {
 	EventSeq           int64
 	EventInserted      bool
 	OperationsInserted int
+	MemoryJobInserted  bool
 }
 
 type storedEvent struct {
@@ -98,15 +100,24 @@ func appendInTransaction(
 			}
 		}
 	}
+	memoryJobInserted := false
+	if prepared.memoryJob != nil {
+		memoryJobInserted, err = insertMemoryJob(ctx, tx, *prepared.memoryJob)
+		if err != nil {
+			return AppendResult{}, err
+		}
+	}
 	return AppendResult{
 		EventSeq:           eventSeq,
 		EventInserted:      eventInserted,
 		OperationsInserted: operationsInserted,
+		MemoryJobInserted:  memoryJobInserted,
 	}, nil
 }
 
 type preparedAppend struct {
-	event storedEvent
+	event     storedEvent
+	memoryJob *preparedMemoryJob
 }
 
 func (store *Store) prepareAppend(request AppendRequest) (preparedAppend, error) {
@@ -134,6 +145,14 @@ func (store *Store) prepareAppend(request AppendRequest) (preparedAppend, error)
 			return preparedAppend{}, fmt.Errorf("mutation batch privacy mode must match append privacy mode")
 		}
 	}
+	var memoryJob *preparedMemoryJob
+	if request.MemoryJob != nil {
+		preparedJob, err := prepareMemoryJob(request.Event, *request.MemoryJob)
+		if err != nil {
+			return preparedAppend{}, err
+		}
+		memoryJob = &preparedJob
+	}
 
 	relativeCWD, err := store.relativeCWD(request.Event.CWD)
 	if err != nil {
@@ -144,19 +163,22 @@ func (store *Store) prepareAppend(request AppendRequest) (preparedAppend, error)
 	}
 
 	digest := sha256.Sum256([]byte(request.Event.Content))
-	return preparedAppend{event: storedEvent{
-		eventID:        request.Event.ID,
-		sessionID:      request.Event.SessionID,
-		protocol:       request.Event.Protocol,
-		kind:           string(request.Event.Kind),
-		adapter:        adapter,
-		privacyMode:    string(request.PrivacyMode),
-		occurredAt:     formatTime(request.Event.OccurredAt),
-		relativeCWD:    relativeCWD,
-		contentSHA256:  hex.EncodeToString(digest[:]),
-		contentLength:  int64(len(request.Event.Content)),
-		redactionCount: request.RedactionCount,
-	}}, nil
+	return preparedAppend{
+		event: storedEvent{
+			eventID:        request.Event.ID,
+			sessionID:      request.Event.SessionID,
+			protocol:       request.Event.Protocol,
+			kind:           string(request.Event.Kind),
+			adapter:        adapter,
+			privacyMode:    string(request.PrivacyMode),
+			occurredAt:     formatTime(request.Event.OccurredAt),
+			relativeCWD:    relativeCWD,
+			contentSHA256:  hex.EncodeToString(digest[:]),
+			contentLength:  int64(len(request.Event.Content)),
+			redactionCount: request.RedactionCount,
+		},
+		memoryJob: memoryJob,
+	}, nil
 }
 
 func (store *Store) relativeCWD(cwd string) (string, error) {

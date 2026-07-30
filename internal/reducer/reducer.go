@@ -41,6 +41,9 @@ type OperationEnvelope struct {
 	Operation     protocol.Operation
 }
 
+// OrderedMemoryChange is the plain-English name used while rebuilding memory.
+type OrderedMemoryChange = OperationEnvelope
+
 type MaterializedRecord struct {
 	Record              protocol.MemoryRecord
 	CanonicalValue      string
@@ -51,6 +54,8 @@ type MaterializedRecord struct {
 	SupersededBy        string
 	DuplicateOf         string
 }
+
+type CurrentMemoryItem = MaterializedRecord
 
 type Contradiction struct {
 	ID                   string
@@ -66,6 +71,14 @@ type View struct {
 	Contradictions   []Contradiction
 	LastOperationSeq int64
 	Digest           string
+}
+
+type CurrentMemory = View
+
+// ApplyMemoryChanges rebuilds current memory from ordered durable changes.
+// Build remains available for version 1 callers and benchmark code.
+func ApplyMemoryChanges(changes []OrderedMemoryChange) (CurrentMemory, error) {
+	return Build(changes)
 }
 
 func Build(envelopes []OperationEnvelope) (View, error) {

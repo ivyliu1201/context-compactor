@@ -26,7 +26,7 @@ type RefreshJobQueue interface {
 	PublishCapsuleRefresh(
 		context.Context,
 		string,
-		compiler.VerifiedCapsule,
+		compiler.MemorySnapshot,
 		time.Time,
 	) (journal.CapsulePublishResult, error)
 	RetryCapsuleRefresh(
@@ -170,7 +170,7 @@ func (worker RefreshWorker) buildAndPublish(
 			err,
 		)
 	}
-	view, err := reducer.Build(operations)
+	view, err := reducer.ApplyMemoryChanges(operations)
 	if err != nil {
 		return fmt.Errorf("rebuild refresh memory view: %w", err)
 	}
@@ -179,7 +179,7 @@ func (worker RefreshWorker) buildAndPublish(
 		return fmt.Errorf("refresh operation snapshot does not match durable job source")
 	}
 
-	compiled, err := compiler.CompileBudgeted(
+	compiled, err := compiler.BuildContext(
 		view,
 		"",
 		job.Configuration.Limits,
@@ -236,8 +236,8 @@ func validateRefreshJobConfiguration(
 			compiler.RenderCounterIdentity,
 		)
 	}
-	if _, err := compiler.CompileBudgeted(
-		reducer.View{},
+	if _, err := compiler.BuildContext(
+		reducer.CurrentMemory{},
 		"",
 		configuration.Limits,
 		compiler.RenderCounterProfile(),

@@ -266,6 +266,60 @@ CREATE TABLE runtime_metrics (
 ) STRICT;
 `,
 	},
+	{
+		version: 5,
+		sql: `
+CREATE TABLE memory_extraction_jobs (
+    job_id TEXT PRIMARY KEY CHECK (length(job_id) = 64),
+    source_event_id TEXT NOT NULL UNIQUE
+        REFERENCES events(event_id) ON DELETE RESTRICT,
+    prompt_text TEXT NOT NULL CHECK (length(prompt_text) > 0),
+    prompt_sha256 TEXT NOT NULL CHECK (length(prompt_sha256) = 64),
+    prompt_policy_version TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
+    redaction_count INTEGER NOT NULL CHECK (redaction_count >= 0),
+    enqueued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    lease_until TEXT,
+    completed_at TEXT,
+    last_attempt_at TEXT,
+    last_error TEXT,
+    last_failed_at TEXT,
+    next_attempt_at TEXT,
+    retryable INTEGER NOT NULL DEFAULT 1 CHECK (retryable IN (0, 1)),
+    result_outcome TEXT
+        CHECK (result_outcome IS NULL OR result_outcome IN ('no_change', 'memory_update')),
+    model TEXT,
+    CHECK (julianday(expires_at) > julianday(enqueued_at)),
+    CHECK (
+        (status IN ('pending', 'processing')
+            AND completed_at IS NULL
+            AND result_outcome IS NULL) OR
+        (status = 'completed'
+            AND completed_at IS NOT NULL
+            AND result_outcome IS NOT NULL) OR
+        (status = 'failed'
+            AND completed_at IS NOT NULL
+            AND result_outcome IS NULL)
+    )
+) STRICT;
+
+CREATE INDEX memory_extraction_jobs_claim_idx
+    ON memory_extraction_jobs(
+        status,
+        retryable,
+        next_attempt_at,
+        lease_until,
+        enqueued_at,
+        job_id
+    );
+
+CREATE INDEX memory_extraction_jobs_expiry_idx
+    ON memory_extraction_jobs(expires_at, status, enqueued_at);
+`,
+	},
 }
 
 const migrationTableSQL = `

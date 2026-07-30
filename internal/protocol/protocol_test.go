@@ -37,6 +37,99 @@ func TestDecodeMutationBatchRejectsTrailingJSON(t *testing.T) {
 	assertErrorContains(t, err, "more than one JSON value")
 }
 
+func TestDecodeExtractionResultAcceptsNoChange(t *testing.T) {
+	raw := `{
+		"protocol":"context-compactor/v1",
+		"outcome":"no_change"
+	}`
+
+	result, err := DecodeExtractionResult(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("DecodeExtractionResult() error = %v", err)
+	}
+	if result.Outcome != OutcomeNoChange || result.MemoryUpdate != nil {
+		t.Fatalf("DecodeExtractionResult() = %+v, want no_change", result)
+	}
+}
+
+func TestValidateExtractionResultAcceptsMemoryUpdate(t *testing.T) {
+	update := validBatch()
+	result := ExtractionResult{
+		Protocol:     Version,
+		Outcome:      OutcomeMemoryUpdate,
+		MemoryUpdate: &update,
+	}
+
+	if err := ValidateExtractionResult(result); err != nil {
+		t.Fatalf("ValidateExtractionResult() error = %v", err)
+	}
+}
+
+func TestValidateExtractionResultRejectsInconsistentOutcomes(t *testing.T) {
+	update := validBatch()
+	tests := []struct {
+		name      string
+		result    ExtractionResult
+		wantError string
+	}{
+		{
+			name: "no change with update",
+			result: ExtractionResult{
+				Protocol:     Version,
+				Outcome:      OutcomeNoChange,
+				MemoryUpdate: &update,
+			},
+			wantError: "no_change result must not include memory_update",
+		},
+		{
+			name: "memory update without update",
+			result: ExtractionResult{
+				Protocol: Version,
+				Outcome:  OutcomeMemoryUpdate,
+			},
+			wantError: "memory_update result requires memory_update",
+		},
+		{
+			name: "unknown outcome",
+			result: ExtractionResult{
+				Protocol: Version,
+				Outcome:  "remember_everything",
+			},
+			wantError: "unsupported extraction outcome",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateExtractionResult(test.result)
+			assertErrorContains(t, err, test.wantError)
+		})
+	}
+}
+
+func TestDecodeExtractionResultRejectsUnknownField(t *testing.T) {
+	raw := `{
+		"protocol":"context-compactor/v1",
+		"outcome":"no_change",
+		"prompt":"must not enter the protocol result"
+	}`
+
+	_, err := DecodeExtractionResult(strings.NewReader(raw))
+	assertErrorContains(t, err, `unknown field "prompt"`)
+}
+
+func TestValidateExtractionResultRejectsInvalidMemoryUpdate(t *testing.T) {
+	update := MemoryUpdate{}
+	result := ExtractionResult{
+		Protocol:     Version,
+		Outcome:      OutcomeMemoryUpdate,
+		MemoryUpdate: &update,
+	}
+
+	err := ValidateExtractionResult(result)
+	assertErrorContains(t, err, "validate memory_update")
+}
+
 func TestValidateMutationBatchRejectsStrictEvidence(t *testing.T) {
 	batch := validBatch()
 	batch.PrivacyMode = PrivacyStrict

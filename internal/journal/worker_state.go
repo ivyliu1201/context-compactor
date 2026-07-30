@@ -58,7 +58,8 @@ ON CONFLICT(singleton) DO UPDATE SET
     last_error = NULL
 WHERE refresh_worker_state.state NOT IN ('starting', 'running')
    OR refresh_worker_state.lease_until IS NULL
-   OR refresh_worker_state.lease_until <= excluded.started_at`,
+   OR julianday(refresh_worker_state.lease_until)
+        <= julianday(excluded.started_at)`,
 		request.Token,
 		request.ConfigurationDigest,
 		formatTime(request.StartedAt),
@@ -191,18 +192,43 @@ WHERE singleton = 1`,
 
 	var claimable int
 	if err := tx.QueryRowContext(ctx, `
-SELECT COUNT(*)
-FROM capsule_refresh_jobs
-WHERE (
-        status = 'pending'
-        AND retryable = 1
-        AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-      )
-   OR (status = 'processing' AND lease_until <= ?)`,
+SELECT (
+    SELECT COUNT(*)
+    FROM capsule_refresh_jobs
+    WHERE (
+            status = 'pending'
+            AND retryable = 1
+            AND (
+                next_attempt_at IS NULL
+                OR julianday(next_attempt_at) <= julianday(?)
+            )
+          )
+       OR (
+            status = 'processing'
+            AND julianday(lease_until) <= julianday(?)
+          )
+) + (
+    SELECT COUNT(*)
+    FROM memory_extraction_jobs
+    WHERE (
+            status = 'pending'
+            AND retryable = 1
+            AND (
+                next_attempt_at IS NULL
+                OR julianday(next_attempt_at) <= julianday(?)
+            )
+          )
+       OR (
+            status = 'processing'
+            AND julianday(lease_until) <= julianday(?)
+          )
+)`,
+		formatTime(now),
+		formatTime(now),
 		formatTime(now),
 		formatTime(now),
 	).Scan(&claimable); err != nil {
-		return false, fmt.Errorf("count claimable refresh jobs: %w", err)
+		return false, fmt.Errorf("count claimable worker jobs: %w", err)
 	}
 	if claimable != 0 {
 		return false, nil

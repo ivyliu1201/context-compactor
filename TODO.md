@@ -56,9 +56,17 @@ Each item must be implemented, verified, reviewed, and committed independently.
       a detached per-repository drain worker, single-flight lease, retry and
       health diagnostics, empty-output suppression, capsule publication, and
       next-hook injection.
-- [ ] Extract only explicit, deterministic natural-language project-memory
-      instructions and preserve validation traceability.
-- [ ] Verify install-to-injection behavior from a fresh project without
+- [x] Accept ordinary natural-language prompts without a required prefix,
+      retain only a bounded redacted extraction job, and use a background model
+      to return `no_change` or a protocol-valid memory update.
+- [x] Keep production on one standard privacy policy while preserving version 1
+      wire and stored-data compatibility.
+- [x] Process extraction jobs through the detached repository worker and enqueue
+      capsule refresh only when accepted memory operations change the current
+      memory revision.
+- [x] Remove the directive-only extractor after the background path is verified
+      and use plain-English names in the active memory flow.
+- [x] Verify install-to-injection behavior from a fresh project without
       manually invoking the refresh worker.
 - [x] Add install, uninstall, status, and doctor commands.
 

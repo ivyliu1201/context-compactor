@@ -71,6 +71,12 @@ type RuntimeReport struct {
 	FailedJobs               int64  `json:"failed_jobs"`
 	Attempts                 int64  `json:"attempts"`
 	PendingAttempts          int64  `json:"pending_attempts"`
+	PendingMemoryJobs        int64  `json:"pending_memory_jobs"`
+	ProcessingMemoryJobs     int64  `json:"processing_memory_jobs"`
+	CompletedMemoryJobs      int64  `json:"completed_memory_jobs"`
+	FailedMemoryJobs         int64  `json:"failed_memory_jobs"`
+	MemoryAttempts           int64  `json:"memory_attempts"`
+	PendingMemoryAttempts    int64  `json:"pending_memory_attempts"`
 	Operations               int64  `json:"operations"`
 	Records                  int64  `json:"records"`
 	PublishedCapsules        int64  `json:"published_capsules"`
@@ -443,7 +449,7 @@ func (state managerState) attachRuntimeHealth(
 	runtimeReport := runtimeReportFromHealth(health)
 	for index := range reports {
 		reports[index].Runtime = runtimeReport
-		if health.Initialized && health.SchemaVersion < 4 {
+		if health.Initialized && health.SchemaVersion < 5 {
 			reports[index].Issues = append(
 				reports[index].Issues,
 				"runtime schema upgrade is required",
@@ -459,6 +465,12 @@ func (state managerState) attachRuntimeHealth(
 			reports[index].Issues = append(
 				reports[index].Issues,
 				"one or more refresh jobs failed and remain retryable",
+			)
+		}
+		if health.FailedMemoryJobs > 0 {
+			reports[index].Issues = append(
+				reports[index].Issues,
+				"one or more memory extraction jobs failed",
 			)
 		}
 	}
@@ -477,6 +489,12 @@ func runtimeReportFromHealth(health journal.RuntimeHealth) RuntimeReport {
 		FailedJobs:               health.FailedJobs,
 		Attempts:                 health.Attempts,
 		PendingAttempts:          health.PendingAttempts,
+		PendingMemoryJobs:        health.PendingMemoryJobs,
+		ProcessingMemoryJobs:     health.ProcessingMemoryJobs,
+		CompletedMemoryJobs:      health.CompletedMemoryJobs,
+		FailedMemoryJobs:         health.FailedMemoryJobs,
+		MemoryAttempts:           health.MemoryAttempts,
+		PendingMemoryAttempts:    health.PendingMemoryAttempts,
 		Operations:               health.Operations,
 		Records:                  health.Records,
 		PublishedCapsules:        health.PublishedCapsules,
@@ -510,8 +528,9 @@ func (state managerState) doctor(
 		}
 		if runtimeUnavailable ||
 			report.Runtime.WorkerNotRunning ||
-			(report.Runtime.Initialized && report.Runtime.SchemaVersion < 4) ||
-			report.Runtime.FailedJobs > 0 {
+			(report.Runtime.Initialized && report.Runtime.SchemaVersion < 5) ||
+			report.Runtime.FailedJobs > 0 ||
+			report.Runtime.FailedMemoryJobs > 0 {
 			report.State = "unhealthy"
 			healthy = false
 		}
