@@ -3,19 +3,21 @@
 [English](README.md)
 
 `context-compactor` 是一個早期開發中的 local-first coding agent 上下文壓縮工具。
-它的目標是在預設不保存完整 prompt 的情況下，保留任務目標、限制、決策與實作狀態。
+它能從一般自然語言保留任務目標、限制、決策與實作狀態，prompt retention
+則維持長度受限、敏感資訊遮罩、本機保存且有期限。
 
 > 狀態：protocol、local SQLite journal、deterministic reducer/compiler、
-> Codex 與 Claude hook runtime，以及 durable capsule-refresh handoff 已完成實作。
-> 專案已有公開 Windows amd64 release，且原始碼安裝仍可供專案本地
-> Codex/Claude 使用。
+> Codex 與 Claude hook runtime、背景自然語言記憶判斷，以及 detached capsule
+> publication 已完成實作。專案已有公開 Windows amd64 release，且原始碼安裝仍
+> 可供專案本地 Codex/Claude 使用。
 
 ## 設計目標
 
 - 在長 session、compact 與 resume 後保留 critical requirements 與否定限制。
 - Repository 檔案與使用者明確指令是事實來源；壓縮記憶是可重建的衍生檢視。
 - 保存結構化的記憶增量操作，不讓模型直接覆寫整份狀態文件。
-- 預設採 balanced privacy：不保存完整 prompt，只保存長度受限且已遮罩的證據片段，資料維持在本機。
+- Production 只使用 standard privacy：prompt job 先遮罩疑似 secret，最多保留
+  8,000 個 Unicode 字元、七天、每個 repository 500 筆，且只存在本機。
 - 使用同一套 Go codebase 支援 Windows、macOS 與 Linux。
 - 以單一 60 輪流程，在第 10、30、50、60 輪驗證 token 降幅與任務恢復品質。
 
@@ -23,11 +25,12 @@
 
 Repository 目前包含 `context-compactor/v1` protocol 型別、deterministic validation、
 每個 repository 各自使用的 SQLite event journal、deterministic reducer/compiler、
-Codex／Claude hook adapters 與可執行的本機 runtime。每次 hook 會在同一 transaction
-內寫入通過驗證的 memory operations 並重建 materialized view，之後才輸出 bounded
-context。Capsule refresh 已改為交由可恢復 worker 的 durable queue 處理，不再使用
-短生命週期 goroutine。行為規格請參閱 [SPEC.md](SPEC.md)，安裝與管理方式請參考
-本篇「安裝」章節。
+Codex／Claude hook adapters 與可執行的本機 runtime。User-prompt hook 不會等待
+model；detached repository worker 會透過目前已登入的 host CLI，取得 `no_change`
+或 typed memory update。通過 deterministic validation 的 operations 只有在 memory
+確實改變時才會重建 view 並排入 capsule publication，下一個支援的 hook 即可注入
+bounded context。行為規格請參閱 [SPEC.md](SPEC.md)，安裝與管理方式請參考本篇
+「安裝」章節。
 
 ## 開發
 
@@ -62,9 +65,10 @@ docker run --rm -e OPENAI_API_KEY -v "$PWD:/workspace" -w /workspace \
 
 ## 安裝
 
-### 從 release 安裝（Windows amd64）
+### 從 release 安裝或更新（Windows amd64）
 
-在 Windows PowerShell 5.1+ 執行：
+在 Windows PowerShell 5.1+ 執行以下指令，即可安裝 latest release 或更新既有的
+managed installation：
 
 ```powershell
 irm https://raw.githubusercontent.com/ivyliu1201/context-compactor/main/scripts/install-release.ps1 | iex
@@ -102,27 +106,42 @@ $m = Get-Content (Join-Path $HOME ".context-compactor\install.json") -Raw | Conv
 此 CLI 移除僅限本安裝器管理的 Hook 定義與 manifest entry，不會刪除已安裝的
 executable。
 
-一般 prompt 文字維持 transient。內建 deterministic extractor 只保存明確指令，例如：
+## 自然語言記憶
+
+不需要特殊前綴，也不需要使用「記住」句型。例如：
 
 ```text
-[context-compactor] goal: 完成 bounded hook runtime。
-[context-compactor] task: 驗證 durable refresh worker。
-[context-compactor] resolve: record-id
+這個專案的 timestamp 必須使用 UTC。
+先完成 detached worker integration，不要更動 benchmark flow。
+先前的 Windows-only 限制已經解除。
 ```
 
-支援的 record 名稱為 `goal`、`acceptance_criterion`、`constraint`、`decision`、
-`blocker`、`question`、`task`、`file`、`test_result`；lifecycle 指令為
-`resolve` 與 `expire`。
+Hook 會保存長度受限且已遮罩疑似 secret 的 extraction job，並自動啟動既有
+detached worker。背景 model 可以提出 typed goal、acceptance criterion、
+constraint、decision、blocker、question、task、file 或已驗證的 test result；
+任何內容進入 memory 前都會通過 deterministic validation。只要求解釋、翻譯、
+一般知識，或其他不影響專案的 prompt，會完成為 `no_change`，也不會發布新 capsule。
+
+Codex 預設透過已登入的 `codex` CLI，routine 使用 `gpt-5.4-mini`、repair 使用
+`gpt-5.4`；Claude 預設透過已登入的 `claude` CLI，分別使用 `haiku` 與
+`sonnet`。可用下列環境變數覆寫 executable、model 與 Codex reasoning effort：
+
+- `CONTEXT_COMPACTOR_CODEX_COMMAND`
+- `CONTEXT_COMPACTOR_CLAUDE_COMMAND`
+- `CONTEXT_COMPACTOR_CODEX_ROUTINE_MODEL`
+- `CONTEXT_COMPACTOR_CODEX_REPAIR_MODEL`
+- `CONTEXT_COMPACTOR_CLAUDE_ROUTINE_MODEL`
+- `CONTEXT_COMPACTOR_CLAUDE_REPAIR_MODEL`
+- `CONTEXT_COMPACTOR_CODEX_REASONING`
+- `CONTEXT_COMPACTOR_USE_ANTHROPIC_API_KEY=1`
 
 ## 隱私模式
 
-規劃中的模式：
-
-- `strict`：只保存結構化事實，不保存證據文字。
-- `balanced`：保存結構化事實與短小、已遮罩的證據片段；這是預設模式。
-- `audit`：需要更完整追溯能力的使用者明確 opt-in 後才能啟用。
-
-在預設設計中，完整 prompt 只作為暫時輸入，不是持久記憶。
+Production 只提供 `standard` policy；為了相容既有資料，它在 version 1 wire
+仍使用 `balanced` 值。舊的 `strict` 與 `audit` 資料仍可讀，但不能用於新的
+production run。受限的 prompt field 只存在 extraction-job table，不會直接被
+render；只有通過驗證的 durable facts 與短 evidence 可能進入 compiled context。
+Retention 與 model provider 邊界請見 [docs/PRIVACY.md](docs/PRIVACY.md)。
 
 ## 授權
 

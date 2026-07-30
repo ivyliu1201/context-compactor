@@ -4,12 +4,14 @@
 
 `context-compactor` is an early-stage, local-first context compression tool for
 coding agents. It is designed to preserve goals, constraints, decisions, and
-implementation state without persisting complete prompts by default.
+implementation state from ordinary language while keeping prompt retention
+bounded, secret-redacted, local, and temporary.
 
 > Status: protocol, local SQLite journal, deterministic reducer/compiler,
-> Codex and Claude hook runtime, and durable capsule-refresh handoff are
-> implemented. Public Windows amd64 release distribution is available, and
-> source install remains available for project-local Codex/Claude workflows.
+> Codex and Claude hook runtime, background natural-language memory decisions,
+> and detached capsule publication are implemented. Public Windows amd64
+> release distribution is available, and source install remains available for
+> project-local Codex/Claude workflows.
 
 ## Design goals
 
@@ -19,8 +21,9 @@ implementation state without persisting complete prompts by default.
   compact memory is a derived, rebuildable view.
 - Store structured memory mutations instead of letting a model overwrite an
   entire state document.
-- Default to balanced privacy: no complete prompt persistence, bounded redacted
-  evidence spans, and local-only storage.
+- Use one standard privacy policy: prompt jobs are secret-redacted, limited to
+  8,000 Unicode characters, retained for at most seven days, capped at 500 per
+  repository, and stored locally.
 - Support Windows, macOS, and Linux from one Go codebase.
 - Evaluate token reduction and task-resume quality in one 60-turn run, with
   checkpoints at turns 10, 30, 50, and 60.
@@ -30,11 +33,13 @@ implementation state without persisting complete prompts by default.
 The repository currently contains the `context-compactor/v1` protocol types,
 deterministic validation rules, a repository-local SQLite event journal,
 deterministic reducer/compiler, Codex and Claude hook adapters, and an
-executable local runtime. Hook invocations atomically append validated memory
-operations and rebuild the materialized view before emitting bounded context.
-Capsule refreshes are durably queued to a recoverable worker instead of using
-short-lived goroutines. Refer to [SPEC.md](SPEC.md) for behavior contracts and
-the installation section below for install and management instructions.
+executable local runtime. A user-prompt hook returns without waiting for model
+work, while the detached repository worker asks the signed-in host CLI for
+either `no_change` or a typed memory update. Accepted operations rebuild the
+materialized view and queue capsule publication only when memory changed. The
+next supported hook can inject the published bounded context. Refer to
+[SPEC.md](SPEC.md) for behavior contracts and the installation section below
+for install and management instructions.
 
 ## Development
 
@@ -69,9 +74,10 @@ gates, but model-dependent gates remain `not_evaluated`.
 
 ## Installation
 
-### Install from release (Windows amd64)
+### Install or update from release (Windows amd64)
 
-Run this one-line installer in Windows PowerShell 5.1+:
+Run this one-line installer in Windows PowerShell 5.1+ to install the latest
+release or update an existing managed installation:
 
 ```powershell
 irm https://raw.githubusercontent.com/ivyliu1201/context-compactor/main/scripts/install-release.ps1 | iex
@@ -115,29 +121,47 @@ $m = Get-Content (Join-Path $HOME ".context-compactor\install.json") -Raw | Conv
 This CLI uninstall removes managed Hook definitions and manifest entries
 tracked by the installer. It does not delete the installed executable.
 
-Ordinary prompt text remains transient. The built-in deterministic extractor
-persists only explicit directives such as:
+## Natural-language memory
+
+No special prefix or “remember” phrase is required. For example:
 
 ```text
-[context-compactor] goal: Ship the bounded hook runtime.
-[context-compactor] task: Verify the durable refresh worker.
-[context-compactor] resolve: record-id
+This project must use UTC timestamps.
+Finish the detached worker integration before changing the benchmark flow.
+The previous Windows-only constraint is resolved.
 ```
 
-Supported record names are `goal`, `acceptance_criterion`, `constraint`,
-`decision`, `blocker`, `question`, `task`, `file`, and `test_result`; lifecycle
-directives are `resolve` and `expire`.
+The hook stores a bounded, secret-redacted extraction job and launches the
+existing detached worker automatically. The background model may propose
+typed goals, acceptance criteria, constraints, decisions, blockers, questions,
+tasks, files, or verified test results. Deterministic validation runs before
+anything reaches memory. Explanation-only, translation, general-knowledge, and
+other prompts without project impact complete as `no_change` and do not
+publish a new capsule.
+
+Codex uses the signed-in `codex` CLI with `gpt-5.4-mini` for routine decisions
+and `gpt-5.4` for repair. Claude uses the signed-in `claude` CLI with `haiku`
+and `sonnet`. The executable, model names, and Codex reasoning effort can be
+overridden with:
+
+- `CONTEXT_COMPACTOR_CODEX_COMMAND`
+- `CONTEXT_COMPACTOR_CLAUDE_COMMAND`
+- `CONTEXT_COMPACTOR_CODEX_ROUTINE_MODEL`
+- `CONTEXT_COMPACTOR_CODEX_REPAIR_MODEL`
+- `CONTEXT_COMPACTOR_CLAUDE_ROUTINE_MODEL`
+- `CONTEXT_COMPACTOR_CLAUDE_REPAIR_MODEL`
+- `CONTEXT_COMPACTOR_CODEX_REASONING`
+- `CONTEXT_COMPACTOR_USE_ANTHROPIC_API_KEY=1`
 
 ## Privacy model
 
-The planned modes are:
-
-- `strict`: structured facts only; no evidence text.
-- `balanced`: structured facts plus short, redacted evidence spans. This is the
-  planned default.
-- `audit`: explicit opt-in retention for users who need deeper traceability.
-
-Complete prompts are transient input in the default design, not durable memory.
+Production exposes one `standard` policy. Its version 1 wire value remains
+`balanced` for stored-data compatibility; legacy `strict` and `audit` values
+remain readable but cannot be selected for new production runs. The bounded
+prompt field exists only in the extraction-job table and is never rendered
+directly; only validated durable facts and short evidence may reach compiled
+context. See [docs/PRIVACY.md](docs/PRIVACY.md) for retention and
+provider-boundary details.
 
 ## License
 
