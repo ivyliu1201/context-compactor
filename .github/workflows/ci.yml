@@ -10,29 +10,53 @@ permissions:
   contents: read
 
 jobs:
-  windows-amd64:
-    name: Windows amd64
+  windows-python:
+    name: Windows / Python ${{ matrix.python-version }}
     runs-on: windows-latest
     timeout-minutes: 15
-    env:
-      CGO_ENABLED: "0"
-      GOARCH: amd64
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.9"
+          - "3.13"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
-          go-version-file: go.mod
-          cache: true
+          python-version: ${{ matrix.python-version }}
 
-      - name: Test
-        run: go test ./...
+      - name: Check Python syntax
+        run: >-
+          python -B -c "import ast,pathlib;
+          roots=('context_compactor','scripts','tests');
+          files=[path for root in roots for path in pathlib.Path(root).rglob('*.py')];
+          [ast.parse(path.read_text(encoding='utf-8'),filename=str(path)) for path in files];
+          print(f'parsed {len(files)} Python files')"
 
-      - name: Vet
-        run: go vet ./...
+      - name: Run Python tests
+        run: python -B -m unittest discover -s tests
 
-      - name: Build Windows executable
-        run: go build -trimpath -ldflags="-s -w" -o context-compactor-windows-amd64.exe ./cmd/context-compactor
+      - name: Check PowerShell syntax
+        shell: pwsh
+        run: |
+          $failures = @()
+          Get-ChildItem -LiteralPath scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failures += "$($_.Name): $($errors -join '; ')"
+            }
+          }
+          if ($failures.Count -gt 0) {
+            throw ($failures -join [Environment]::NewLine)
+          }

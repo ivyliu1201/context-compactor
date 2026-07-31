@@ -9,13 +9,10 @@ permissions:
   contents: write
 
 jobs:
-  windows-amd64:
-    name: Windows amd64 release
+  source-release:
+    name: Verify Python source and draft release
     runs-on: windows-latest
     timeout-minutes: 20
-    env:
-      CGO_ENABLED: "0"
-      GOARCH: amd64
 
     steps:
       - name: Check out repository
@@ -23,31 +20,33 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
-          go-version-file: go.mod
-          cache: true
+          python-version: "3.13"
 
-      - name: Test
-        run: go test ./...
+      - name: Run Python tests
+        run: python -B -m unittest discover -s tests
 
-      - name: Vet
-        run: go vet ./...
-
-      - name: Build Windows executable
+      - name: Check PowerShell syntax
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          go build -trimpath -ldflags="-s -w" -o dist/context-compactor-windows-amd64.exe ./cmd/context-compactor
-
-      - name: Create SHA-256 checksums
-        shell: pwsh
-        run: |
-          $asset = "dist/context-compactor-windows-amd64.exe"
-          $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  context-compactor-windows-amd64.exe" |
-            Set-Content -LiteralPath dist/checksums.txt -Encoding ascii
+          $failures = @()
+          Get-ChildItem -LiteralPath scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failures += "$($_.Name): $($errors -join '; ')"
+            }
+          }
+          if ($failures.Count -gt 0) {
+            throw ($failures -join [Environment]::NewLine)
+          }
 
       - name: Create draft GitHub release
         shell: pwsh
@@ -58,8 +57,6 @@ jobs:
             "release",
             "create",
             $env:GITHUB_REF_NAME,
-            "dist/context-compactor-windows-amd64.exe#Windows amd64 executable",
-            "dist/checksums.txt#SHA-256 checksums",
             "--draft",
             "--generate-notes",
             "--title",
