@@ -2,6 +2,9 @@
 
 [CmdletBinding()]
 param(
+    [ValidateSet("install", "update", "uninstall", "status", "doctor")]
+    [string]$Action = "install",
+
     [Parameter(Position = 0)]
     [string]$ProjectRoot = (Get-Location).Path,
 
@@ -10,26 +13,28 @@ param(
 
     [string]$InstallDirectory,
 
-    [string]$DockerImage = "golang:1.26"
+    [string]$Python = "python",
+
+    [string]$ModelCommandJson
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Invoke-ContextCompactor {
+function Resolve-Executable {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Executable,
-
-        [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
+        [string]$Value
     )
 
-    $output = & $Executable @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "context-compactor $($Arguments[0]) failed with exit code $LASTEXITCODE."
+    if (Test-Path -LiteralPath $Value -PathType Leaf) {
+        return [IO.Path]::GetFullPath($Value)
     }
-    return $output
+    $resolved = Get-Command $Value -ErrorAction SilentlyContinue
+    if ($null -eq $resolved) {
+        throw "Required executable is unavailable."
+    }
+    return $resolved.Source
 }
 
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
@@ -42,10 +47,12 @@ if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA) -and
 }
 
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$goModulePath = Join-Path $sourceRoot "go.mod"
-$commandPath = Join-Path $sourceRoot "cmd\context-compactor"
-if (-not (Test-Path -LiteralPath $goModulePath -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $commandPath -PathType Container)) {
+$packagePath = Join-Path $sourceRoot "context_compactor"
+$lockPath = Join-Path $sourceRoot "requirements.lock"
+$hookWrapperPath = Join-Path $sourceRoot "scripts\context-compactor-hook.ps1"
+if (-not (Test-Path -LiteralPath $packagePath -PathType Container) -or
+    -not (Test-Path -LiteralPath $lockPath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $hookWrapperPath -PathType Leaf)) {
     throw "Run this installer from a context-compactor source checkout."
 }
 
@@ -54,137 +61,81 @@ if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
     $InstallDirectory = Join-Path $env:LOCALAPPDATA "context-compactor"
 }
 $resolvedInstallDirectory = [IO.Path]::GetFullPath($InstallDirectory)
+$pythonPath = Resolve-Executable -Value $Python
 
-$docker = Get-Command docker.exe -ErrorAction SilentlyContinue
-if ($null -eq $docker) {
-    $docker = Get-Command docker -ErrorAction SilentlyContinue
+$pythonVersion = & $pythonPath -c `
+    "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to inspect the configured Python interpreter."
 }
-if ($null -eq $docker) {
-    throw "Docker Desktop is required to build context-compactor."
-}
-
-$previousErrorActionPreference = $ErrorActionPreference
 try {
-    $ErrorActionPreference = "Continue"
-    $dockerInfo = & $docker.Source info --format "{{.ServerVersion}}" 2>&1
-    $dockerInfoExitCode = $LASTEXITCODE
-} finally {
-    $ErrorActionPreference = $previousErrorActionPreference
-}
-if ($dockerInfoExitCode -ne 0) {
-    throw "Docker Desktop is installed but unavailable: $dockerInfo"
-}
-
-$distDirectory = Join-Path $sourceRoot "dist"
-$buildName = "context-compactor-installer-$PID.exe"
-$buildPath = Join-Path $distDirectory $buildName
-$containerBuildPath = "/workspace/dist/$buildName"
-$installedPath = $null
-$copiedNewBinary = $false
-$hookInstalled = $false
-
-try {
-    New-Item -ItemType Directory -Force -Path $distDirectory | Out-Null
-
-    Write-Host "Building context-compactor with $DockerImage..."
-    $dockerArguments = @(
-        "run",
-        "--rm",
-        "-v",
-        "${sourceRoot}:/workspace",
-        "-w",
-        "/workspace",
-        "-e",
-        "GOCACHE=/workspace/.cache/go-build",
-        "-e",
-        "GOMODCACHE=/workspace/.cache/go-mod",
-        "-e",
-        "GOOS=windows",
-        "-e",
-        "GOARCH=amd64",
-        "-e",
-        "CGO_ENABLED=0",
-        $DockerImage,
-        "go",
-        "build",
-        "-trimpath",
-        "-ldflags=-s -w",
-        "-o",
-        $containerBuildPath,
-        "./cmd/context-compactor"
-    )
-    & $docker.Source @dockerArguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Docker build failed with exit code $LASTEXITCODE."
-    }
-    if (-not (Test-Path -LiteralPath $buildPath -PathType Leaf)) {
-        throw "Docker build completed without producing the expected executable."
-    }
-
-    $buildHash = (Get-FileHash -LiteralPath $buildPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    New-Item -ItemType Directory -Force -Path $resolvedInstallDirectory | Out-Null
-    $installedPath = Join-Path $resolvedInstallDirectory (
-        "context-compactor-{0}.exe" -f $buildHash.Substring(0, 12)
-    )
-
-    if (Test-Path -LiteralPath $installedPath -PathType Leaf) {
-        $installedHash = (Get-FileHash -LiteralPath $installedPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($installedHash -ne $buildHash) {
-            throw "The existing installed executable does not match its content-addressed name."
-        }
-    } else {
-        Copy-Item -LiteralPath $buildPath -Destination $installedPath
-        $copiedNewBinary = $true
-    }
-
-    $selfCheck = Invoke-ContextCompactor -Executable $installedPath -Arguments @("self-check")
-    if (($selfCheck -join "`n") -ne '{"protocol":"context-compactor/v1","status":"ok"}') {
-        throw "Installed executable returned an unexpected self-check response."
-    }
-
-    Write-Host "Installing $AgentHost hooks into $resolvedProjectRoot..."
-    $installReport = Invoke-ContextCompactor -Executable $installedPath -Arguments @(
-        "install",
-        "--host",
-        $AgentHost,
-        "--project-root",
-        $resolvedProjectRoot,
-        "--executable",
-        $installedPath
-    )
-    $hookInstalled = $true
-
-    $statusReport = Invoke-ContextCompactor -Executable $installedPath -Arguments @(
-        "status",
-        "--host",
-        $AgentHost,
-        "--project-root",
-        $resolvedProjectRoot
-    )
-    $doctorReport = Invoke-ContextCompactor -Executable $installedPath -Arguments @(
-        "doctor",
-        "--host",
-        $AgentHost,
-        "--project-root",
-        $resolvedProjectRoot
-    )
-
-    $installReport | Write-Output
-    $statusReport | Write-Output
-    $doctorReport | Write-Output
-    Write-Host "Installed executable: $installedPath"
-    if ($AgentHost -eq "codex" -or $AgentHost -eq "all") {
-        Write-Host "Open /hooks in Codex and trust the project hook before relying on activation."
-    }
+    $parsedPythonVersion = [Version]($pythonVersion | Select-Object -First 1)
 } catch {
-    if ($copiedNewBinary -and -not $hookInstalled -and
-        -not [string]::IsNullOrWhiteSpace($installedPath) -and
-        (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
-        Remove-Item -LiteralPath $installedPath -Force
+    throw "The configured Python interpreter returned an invalid version."
+}
+if ($parsedPythonVersion -lt [Version]"3.9") {
+    throw "Python 3.9 or newer is required."
+}
+
+$modelCommand = @()
+if ($Action -eq "install" -or $Action -eq "update") {
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw "Git is required for source installation and update."
     }
-    throw
+    if ([string]::IsNullOrWhiteSpace($ModelCommandJson)) {
+        throw "-ModelCommandJson is required for install and update."
+    }
+    $trimmedModelCommandJson = $ModelCommandJson.Trim()
+    if (-not $trimmedModelCommandJson.StartsWith("[") -or
+        -not $trimmedModelCommandJson.EndsWith("]")) {
+        throw "-ModelCommandJson must be a JSON array of command arguments."
+    }
+    try {
+        $parsedModelCommand = ConvertFrom-Json -InputObject $ModelCommandJson
+        $modelCommand = @($parsedModelCommand | ForEach-Object { $_ })
+    } catch {
+        throw "-ModelCommandJson must be a JSON array of command arguments."
+    }
+    if ($modelCommand.Count -eq 0) {
+        throw "-ModelCommandJson must contain at least one command argument."
+    }
+    foreach ($argument in $modelCommand) {
+        if ($argument -isnot [string] -or
+            [string]::IsNullOrWhiteSpace([string]$argument)) {
+            throw "-ModelCommandJson must contain only non-empty strings."
+        }
+    }
+}
+
+$arguments = @(
+    "-m",
+    "context_compactor",
+    $Action,
+    "--project-root",
+    $resolvedProjectRoot,
+    "--install-root",
+    $resolvedInstallDirectory,
+    "--host",
+    $AgentHost
+)
+if ($Action -eq "install" -or $Action -eq "update") {
+    $arguments += @(
+        "--source-root",
+        $sourceRoot,
+        "--python",
+        $pythonPath,
+        "--model-command"
+    )
+    $arguments += $modelCommand
+}
+
+Push-Location $sourceRoot
+try {
+    & $pythonPath @arguments
+    $exitCode = $LASTEXITCODE
 } finally {
-    if (Test-Path -LiteralPath $buildPath -PathType Leaf) {
-        Remove-Item -LiteralPath $buildPath -Force
-    }
+    Pop-Location
+}
+if ($exitCode -ne 0) {
+    throw "context-compactor $Action failed with exit code $exitCode."
 }

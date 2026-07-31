@@ -18,8 +18,18 @@ from .host import (
 )
 from .journal import Journal
 from .launcher import launch_worker
+from .management import (
+    HOST_CLAUDE as MANAGED_HOST_CLAUDE,
+    HOST_CODEX as MANAGED_HOST_CODEX,
+    ManagementError,
+    doctor,
+    install_source,
+    status,
+    uninstall,
+    update_source,
+)
 from .model import CommandModel
-from .paths import project_paths, resolve_project_root
+from .paths import ProjectPathError, project_paths, resolve_project_root
 from .state import ProjectState, load_state, load_state_file, publish_state
 from .worker import MemoryWorker
 
@@ -54,6 +64,33 @@ def _parser() -> argparse.ArgumentParser:
     hook.add_argument("--host", choices=(HOST_CODEX, HOST_CLAUDE), required=True)
     hook.add_argument("--project-root", type=Path)
     hook.add_argument("--model-command", nargs=argparse.REMAINDER, required=True)
+
+    for name in ("install", "update"):
+        management = commands.add_parser(name)
+        management.add_argument("--project-root", type=Path)
+        management.add_argument("--source-root", type=Path, required=True)
+        management.add_argument("--install-root", type=Path)
+        management.add_argument("--python", default=sys.executable)
+        management.add_argument(
+            "--host",
+            choices=(MANAGED_HOST_CODEX, MANAGED_HOST_CLAUDE, "all"),
+            default=MANAGED_HOST_CODEX,
+        )
+        management.add_argument(
+            "--model-command",
+            nargs=argparse.REMAINDER,
+            required=True,
+        )
+
+    for name in ("uninstall", "status", "doctor"):
+        management = commands.add_parser(name)
+        management.add_argument("--project-root", type=Path)
+        management.add_argument("--install-root", type=Path)
+        management.add_argument(
+            "--host",
+            choices=(MANAGED_HOST_CODEX, MANAGED_HOST_CLAUDE, "all"),
+            default=MANAGED_HOST_CODEX,
+        )
     return parser
 
 
@@ -121,6 +158,47 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sys.stdout.buffer.flush()
         for category in result.diagnostic_categories:
             print(diagnostic_line(result.event_id, category), file=sys.stderr)
+        return 0
+
+    if args.command in {"install", "update", "uninstall", "status", "doctor"}:
+        try:
+            common = {
+                "project_root": resolve_project_root(args.project_root),
+                "install_root": args.install_root,
+                "hosts": (args.host,),
+            }
+            if args.command == "install":
+                report = install_source(
+                    **common,
+                    source_root=args.source_root,
+                    python=args.python,
+                    model_command=args.model_command,
+                )
+            elif args.command == "update":
+                report = update_source(
+                    **common,
+                    source_root=args.source_root,
+                    python=args.python,
+                    model_command=args.model_command,
+                )
+            elif args.command == "uninstall":
+                report = uninstall(**common)
+            elif args.command == "status":
+                report = status(**common)
+            else:
+                report = doctor(**common)
+        except (ManagementError, ProjectPathError) as error:
+            print(
+                json.dumps(
+                    {"ok": False, "error": str(error)},
+                    separators=(",", ":"),
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        print(json.dumps(report, separators=(",", ":")))
+        if args.command == "doctor" and not report["healthy"]:
+            return 1
         return 0
 
     print("unsupported command", file=sys.stderr)
