@@ -9,6 +9,7 @@ from pathlib import Path
 
 from context_compactor.benchmark import (
     CHECKPOINT_QUESTION,
+    ENDURANCE_CHECKPOINTS,
     ENDURANCE_TURNS,
     SEEDS,
     STAGE1_CHECKPOINTS,
@@ -18,7 +19,9 @@ from context_compactor.benchmark import (
     estimate_input_tokens,
     expected_facts,
     parse_codex_jsonl,
+    render_combined_markdown_report,
     render_markdown_report,
+    run_endurance_benchmark,
     run_stage1_benchmark,
     serialize_arm_input,
     state_for_turn,
@@ -31,7 +34,12 @@ class FakeForegroundClient:
     model = "synthetic-test-model"
     reasoning_effort = "deterministic"
 
+    def __init__(self) -> None:
+        self.probe_count = 0
+        self.invoke_count = 0
+
     def probe(self) -> ForegroundInvocation:
+        self.probe_count += 1
         return ForegroundInvocation(
             value={"probe": True},
             usage={
@@ -45,6 +53,7 @@ class FakeForegroundClient:
         )
 
     def invoke(self, prompt: str) -> ForegroundInvocation:
+        self.invoke_count += 1
         seed, checkpoint = _identity_from_prompt(prompt)
         fixture = build_scenario(seed, checkpoint)
         value = expected_facts(fixture, checkpoint).as_mapping()
@@ -67,7 +76,8 @@ def _identity_from_prompt(prompt: str) -> tuple[int, int]:
     for seed in SEEDS:
         marker = f"goal-private-bounded-memory-{seed:04x}"
         if marker in prompt:
-            for checkpoint in reversed(STAGE1_CHECKPOINTS):
+            checkpoints = (*STAGE1_CHECKPOINTS, *ENDURANCE_CHECKPOINTS)
+            for checkpoint in sorted(checkpoints, reverse=True):
                 if f"TURN {checkpoint:02d} " in prompt:
                     return seed, checkpoint
     raise AssertionError("fake foreground input identity is missing")
@@ -88,6 +98,8 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(first.turns[20].session_id, first.turns[21].session_id)
         self.assertNotEqual(first.turns[19].session_id, first.turns[20].session_id)
+        self.assertNotEqual(first.turns[44].session_id, first.turns[45].session_id)
+        self.assertEqual(first.turns[45].outcome, "no_change")
 
     def test_a_b_inputs_share_question_and_meet_estimated_reductions(self) -> None:
         for seed in SEEDS:
@@ -119,6 +131,31 @@ class BenchmarkTests(unittest.TestCase):
                     {10: 30.0, 20: 50.0, 30: 60.0}[checkpoint],
                 )
 
+    def test_endurance_inputs_are_bounded_and_meet_turn_60_gate(self) -> None:
+        for seed in SEEDS:
+            fixture = build_scenario(seed, ENDURANCE_TURNS)
+            token_rows = {}
+            for checkpoint in ENDURANCE_CHECKPOINTS:
+                state = state_for_turn(fixture, checkpoint)
+                token_rows[checkpoint] = {
+                    arm: estimate_input_tokens(
+                        serialize_arm_input(
+                            fixture,
+                            checkpoint,
+                            state,
+                            arm,
+                        )
+                    )
+                    for arm in ("A", "B")
+                }
+
+            restart = token_rows[ENDURANCE_CHECKPOINTS[0]]
+            final = token_rows[ENDURANCE_CHECKPOINTS[-1]]
+            reduction = (final["A"] - final["B"]) / final["A"] * 100
+            self.assertGreater(final["A"], restart["A"])
+            self.assertLessEqual(final["B"], restart["B"] + 256)
+            self.assertGreaterEqual(reduction, 75.0)
+
     def test_state_facts_appear_only_after_their_scenario_turn(self) -> None:
         fixture = build_scenario(SEEDS[0], 11)
 
@@ -148,7 +185,7 @@ class BenchmarkTests(unittest.TestCase):
 
     @unittest.skipUnless(
         os.environ.get("CONTEXT_COMPACTOR_RUN_BENCHMARK_TESTS") == "1",
-        "formal 90-turn benchmark matrix is opt-in",
+        "formal benchmark matrix is opt-in",
     )
     def test_stage1_fake_run_passes_schema_privacy_and_all_gates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -177,6 +214,50 @@ class BenchmarkTests(unittest.TestCase):
         invalid["calls"][0]["prompt"] = "forbidden"
         with self.assertRaisesRegex(BenchmarkError, "forbidden field"):
             validate_report(invalid)
+
+    @unittest.skipUnless(
+        os.environ.get("CONTEXT_COMPACTOR_RUN_BENCHMARK_TESTS") == "1",
+        "formal benchmark matrix is opt-in",
+    )
+    def test_endurance_fake_run_uses_only_12_calls_and_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess_repository(root)
+            release = run_stage1_benchmark(
+                root,
+                FakeForegroundClient(),
+                started_at=datetime(2026, 7, 31, tzinfo=timezone.utc),
+            )
+            endurance_client = FakeForegroundClient()
+            endurance = run_endurance_benchmark(
+                root,
+                endurance_client,
+                release,
+                started_at=datetime(2026, 7, 31, 1, tzinfo=timezone.utc),
+            )
+
+        validate_report(endurance)
+        markdown = render_combined_markdown_report(release, endurance)
+        self.assertEqual(endurance["status"], "pass")
+        self.assertEqual(len(endurance["calls"]), 12)
+        self.assertEqual(endurance_client.probe_count, 0)
+        self.assertEqual(endurance_client.invoke_count, 12)
+        self.assertEqual(endurance["privacy"]["defined_secret_matches"], 0)
+        self.assertTrue(
+            endurance["aggregate"]["primary_tokens"][
+                "all_reduction_gates_passed"
+            ]
+        )
+        self.assertTrue(
+            all(
+                seed["structural_gates"][
+                    "bounded_context_after_second_restart"
+                ]
+                for seed in endurance["seeds"]
+            )
+        )
+        self.assertEqual(markdown.count("# Context Compactor Benchmark v3"), 1)
+        self.assertIn("## 60 輪耐久測試", markdown)
 
     def test_codex_jsonl_usage_is_observed_only_when_input_exists(self) -> None:
         content = {

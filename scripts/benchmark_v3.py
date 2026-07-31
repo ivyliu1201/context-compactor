@@ -13,7 +13,9 @@ if str(SOURCE_ROOT) not in sys.path:
 from context_compactor.benchmark import (
     BenchmarkError,
     CodexForegroundClient,
+    render_combined_markdown_report,
     render_markdown_report,
+    run_endurance_benchmark,
     run_stage1_benchmark,
     validate_report,
 )
@@ -22,6 +24,11 @@ from context_compactor.benchmark import (
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the formal context-compactor Benchmark Plan v3 Gate.",
+    )
+    parser.add_argument(
+        "--stage",
+        choices=("release", "endurance"),
+        default="release",
     )
     parser.add_argument(
         "--repository-root",
@@ -37,6 +44,10 @@ def _parser() -> argparse.ArgumentParser:
         "--report",
         type=Path,
         required=True,
+    )
+    parser.add_argument(
+        "--stage1-result",
+        type=Path,
     )
     parser.add_argument(
         "--codex-command",
@@ -67,7 +78,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             reasoning_effort=args.reasoning_effort,
             timeout_seconds=args.timeout_seconds,
         )
-        result = run_stage1_benchmark(args.repository_root, client)
+        if args.stage == "release":
+            if args.stage1_result is not None:
+                raise BenchmarkError(
+                    "--stage1-result is only valid for the endurance stage"
+                )
+            result = run_stage1_benchmark(args.repository_root, client)
+            markdown = render_markdown_report(result)
+        else:
+            if args.stage1_result is None:
+                raise BenchmarkError(
+                    "endurance stage requires --stage1-result"
+                )
+            if args.output.resolve() == args.stage1_result.resolve():
+                raise BenchmarkError(
+                    "endurance output must not overwrite the 30-turn result"
+                )
+            release_result = json.loads(
+                args.stage1_result.read_text(encoding="utf-8")
+            )
+            if not isinstance(release_result, dict):
+                raise BenchmarkError("30-turn result must be a JSON object")
+            result = run_endurance_benchmark(
+                args.repository_root,
+                client,
+                release_result,
+            )
+            markdown = render_combined_markdown_report(
+                release_result,
+                result,
+            )
         validate_report(result)
         encoded = (
             json.dumps(
@@ -78,12 +118,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             + "\n"
         )
-        markdown = render_markdown_report(result)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(encoded, encoding="utf-8")
         args.report.write_text(markdown, encoding="utf-8")
-    except (BenchmarkError, OSError) as error:
+    except (BenchmarkError, json.JSONDecodeError, OSError) as error:
         print(f"benchmark_v3: {error}", file=sys.stderr)
         return 1
     print(

@@ -52,7 +52,7 @@ PRIVACY_FILTER_VERSION = "defined-patterns-v1"
 MODEL_CALL_TIMEOUT_SECONDS = 300
 WINDOWS_CREATE_NO_WINDOW = 0x08000000
 _NO_CHANGE_TURNS = frozenset(
-    {4, 9, 14, 19, 21, 22, 24, 29, 34, 39, 44, 49, 54, 59}
+    {4, 9, 14, 19, 21, 22, 24, 29, 34, 39, 44, 46, 49, 54, 59}
 )
 _REDUCTION_GATES = {10: 30.0, 20: 50.0, 30: 60.0, 60: 75.0}
 _FORBIDDEN_REPORT_KEYS = frozenset(
@@ -666,32 +666,81 @@ def run_stage1_benchmark(
     *,
     started_at: Optional[datetime] = None,
 ) -> dict[str, object]:
+    return _run_benchmark(
+        repository_root,
+        client,
+        stage="30-turn-release-gate",
+        turns=STAGE1_TURNS,
+        checkpoints=STAGE1_CHECKPOINTS,
+        started_at=started_at,
+    )
+
+
+def run_endurance_benchmark(
+    repository_root: Path,
+    client: ForegroundClient,
+    release_report: Mapping[str, object],
+    *,
+    started_at: Optional[datetime] = None,
+) -> dict[str, object]:
+    validate_report(release_report)
+    if (
+        release_report.get("stage") != "30-turn-release-gate"
+        or release_report.get("status") != "pass"
+    ):
+        raise BenchmarkError("endurance benchmark requires a passing 30-turn report")
+    release_reproduction = _mapping(
+        release_report.get("reproduction"),
+        "release reproduction",
+    )
+    expected_client = {
+        "codex_cli_version": client.codex_version,
+        "model": client.model,
+        "reasoning_effort": client.reasoning_effort,
+    }
+    if any(
+        release_reproduction.get(name) != value
+        for name, value in expected_client.items()
+    ):
+        raise BenchmarkError(
+            "endurance benchmark must use the release-gate model configuration"
+        )
+    return _run_benchmark(
+        repository_root,
+        client,
+        stage="60-turn-endurance-gate",
+        turns=ENDURANCE_TURNS,
+        checkpoints=ENDURANCE_CHECKPOINTS,
+        started_at=started_at,
+        capability_probe=_mapping(
+            release_report.get("capability_probe"),
+            "release capability probe",
+        ),
+    )
+
+
+def _run_benchmark(
+    repository_root: Path,
+    client: ForegroundClient,
+    *,
+    stage: str,
+    turns: int,
+    checkpoints: Sequence[int],
+    started_at: Optional[datetime],
+    capability_probe: Optional[Mapping[str, object]] = None,
+) -> dict[str, object]:
     root = repository_root.resolve(strict=True)
     started = _utc_now() if started_at is None else _as_utc(started_at)
     started_monotonic = time.monotonic()
-    probe = client.probe()
-    probe_fields = (
-        sorted(name for name in _USAGE_FIELDS if name in probe.usage)
-        if probe.usage is not None
-        else []
-    )
-    report: dict[str, object] = {
-        "schema_version": REPORT_SCHEMA_VERSION,
-        "stage": "30-turn-release-gate",
-        "scenario": {
-            "id": SCENARIO_ID,
-            "version": SCENARIO_VERSION,
-            "mode": "standard",
-            "turns": STAGE1_TURNS,
-            "checkpoints": list(STAGE1_CHECKPOINTS),
-            "seeds": list(SEEDS),
-            "arms": {
-                "A": "full_transcript",
-                "B": "state_plus_two_recent_turns",
-            },
-        },
-        "reproduction": _reproduction_metadata(root, client, started),
-        "capability_probe": {
+    probe_output = ""
+    if capability_probe is None:
+        probe = client.probe()
+        probe_fields = (
+            sorted(name for name in _USAGE_FIELDS if name in probe.usage)
+            if probe.usage is not None
+            else []
+        )
+        capability: dict[str, object] = {
             "status": (
                 "observed"
                 if probe.failure_category is None
@@ -702,7 +751,27 @@ def run_stage1_benchmark(
             "usage_fields": probe_fields,
             "failure_category": probe.failure_category,
             "elapsed_ms": round(probe.elapsed_ms, 3),
+        }
+        probe_output = probe.stdout + probe.stderr
+    else:
+        capability = dict(capability_probe)
+    report: dict[str, object] = {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "stage": stage,
+        "scenario": {
+            "id": SCENARIO_ID,
+            "version": SCENARIO_VERSION,
+            "mode": "standard",
+            "turns": turns,
+            "checkpoints": list(checkpoints),
+            "seeds": list(SEEDS),
+            "arms": {
+                "A": "full_transcript",
+                "B": "state_plus_two_recent_turns",
+            },
         },
+        "reproduction": _reproduction_metadata(root, client, started),
+        "capability_probe": capability,
         "calls": [],
         "seeds": [],
         "aggregate": {},
@@ -731,12 +800,12 @@ def run_stage1_benchmark(
         raise BenchmarkError("internal report collections are invalid")
     probe_privacy_matches = 0
     for seed in SEEDS:
-        fixture = build_scenario(seed, STAGE1_TURNS)
+        fixture = build_scenario(seed, turns)
         probe_privacy_matches += _matches(
-            probe.stdout + probe.stderr,
+            probe_output,
             fixture.secrets,
         )
-        seed_report, seed_calls = _run_seed(fixture, client)
+        seed_report, seed_calls = _run_seed(fixture, client, checkpoints)
         seed_reports.append(seed_report)
         calls.extend(seed_calls)
     privacy = report["privacy"]
@@ -749,7 +818,7 @@ def run_stage1_benchmark(
             for seed_report in seed_reports
         )
     )
-    report["aggregate"] = _aggregate(seed_reports, calls)
+    report["aggregate"] = _aggregate(seed_reports, calls, checkpoints)
     reproduction = report["reproduction"]
     if not isinstance(reproduction, dict):
         raise BenchmarkError("internal reproduction report is invalid")
@@ -896,6 +965,26 @@ def render_markdown_report(report: Mapping[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_combined_markdown_report(
+    release_report: Mapping[str, object],
+    endurance_report: Mapping[str, object],
+) -> str:
+    validate_report(release_report)
+    validate_report(endurance_report)
+    if (
+        release_report.get("stage") != "30-turn-release-gate"
+        or endurance_report.get("stage") != "60-turn-endurance-gate"
+    ):
+        raise BenchmarkError("combined report stages are invalid")
+    release = render_markdown_report(release_report).rstrip()
+    endurance_lines = render_markdown_report(endurance_report).splitlines()
+    endurance_lines[0] = "## 60 輪耐久測試"
+    for index, line in enumerate(endurance_lines[1:], start=1):
+        if line.startswith("## "):
+            endurance_lines[index] = "#" + line
+    return release + "\n\n---\n\n" + "\n".join(endurance_lines) + "\n"
+
+
 def validate_report(report: Mapping[str, object]) -> None:
     expected_top_level = {
         "schema_version",
@@ -914,20 +1003,29 @@ def validate_report(report: Mapping[str, object]) -> None:
         raise BenchmarkError("benchmark report top-level fields are invalid")
     if report.get("schema_version") != REPORT_SCHEMA_VERSION:
         raise BenchmarkError("benchmark report schema version is invalid")
-    if report.get("stage") != "30-turn-release-gate":
+    contracts = {
+        "30-turn-release-gate": (STAGE1_TURNS, STAGE1_CHECKPOINTS),
+        "60-turn-endurance-gate": (ENDURANCE_TURNS, ENDURANCE_CHECKPOINTS),
+    }
+    stage = report.get("stage")
+    if not isinstance(stage, str) or stage not in contracts:
         raise BenchmarkError("benchmark stage is invalid")
+    turns, checkpoints = contracts[stage]
     if report.get("status") not in {"pass", "fail", "not_evaluated"}:
         raise BenchmarkError("benchmark status is invalid")
     scenario = _mapping(report.get("scenario"), "scenario")
-    if scenario.get("id") != SCENARIO_ID:
+    if (
+        scenario.get("id") != SCENARIO_ID
+        or scenario.get("version") != SCENARIO_VERSION
+    ):
         raise BenchmarkError("benchmark scenario is invalid")
     if scenario.get("mode") != "standard":
         raise BenchmarkError("benchmark mode is invalid")
-    if scenario.get("turns") != STAGE1_TURNS:
+    if scenario.get("turns") != turns:
         raise BenchmarkError("benchmark stage turn count is invalid")
     if scenario.get("seeds") != list(SEEDS):
         raise BenchmarkError("benchmark seeds are invalid")
-    if scenario.get("checkpoints") != list(STAGE1_CHECKPOINTS):
+    if scenario.get("checkpoints") != list(checkpoints):
         raise BenchmarkError("benchmark checkpoints are invalid")
     if scenario.get("arms") != {
         "A": "full_transcript",
@@ -984,7 +1082,7 @@ def validate_report(report: Mapping[str, object]) -> None:
 
     calls = report.get("calls")
     if not isinstance(calls, list) or len(calls) != (
-        len(SEEDS) * len(STAGE1_CHECKPOINTS) * 2
+        len(SEEDS) * len(checkpoints) * 2
     ):
         raise BenchmarkError("benchmark call matrix is incomplete")
     call_ids = set()
@@ -992,7 +1090,7 @@ def validate_report(report: Mapping[str, object]) -> None:
         call = _mapping(call_value, "call")
         if call.get("seed") not in SEEDS:
             raise BenchmarkError("benchmark call seed is invalid")
-        if call.get("turn") not in STAGE1_CHECKPOINTS:
+        if call.get("turn") not in checkpoints:
             raise BenchmarkError("benchmark call checkpoint is invalid")
         if call.get("arm") not in {"A", "B"}:
             raise BenchmarkError("benchmark call arm is invalid")
@@ -1042,8 +1140,10 @@ def validate_report(report: Mapping[str, object]) -> None:
     for seed_value in seed_values:
         seed = _mapping(seed_value, "seed result")
         observed_seeds.append(seed.get("seed"))
+        if seed.get("turns") != turns:
+            raise BenchmarkError("benchmark seed turn count is invalid")
         trend = seed.get("context_trend")
-        if not isinstance(trend, list) or len(trend) != STAGE1_TURNS:
+        if not isinstance(trend, list) or len(trend) != turns:
             raise BenchmarkError("benchmark context trend is incomplete")
         for row_value in trend:
             row = _mapping(row_value, "context trend")
@@ -1086,6 +1186,7 @@ def validate_report(report: Mapping[str, object]) -> None:
 def _run_seed(
     fixture: ScenarioFixture,
     client: ForegroundClient,
+    checkpoints: Sequence[int],
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     hook_latencies = []
     background_latencies = []
@@ -1222,7 +1323,7 @@ def _run_seed(
                 }
             )
             privacy_matches += _scan_project_privacy(project, fixture.secrets)
-        for checkpoint in STAGE1_CHECKPOINTS:
+        for checkpoint in checkpoints:
             expected = expected_facts(fixture, checkpoint)
             for arm in ("A", "B"):
                 prompt = inputs[(checkpoint, arm)]
@@ -1243,6 +1344,11 @@ def _run_seed(
                     )
                 )
     seed_calls = [call for call in calls if call["seed"] == fixture.seed]
+    resume_calls = [
+        call
+        for call in seed_calls
+        if call["turn"] in {STAGE1_TURNS, ENDURANCE_TURNS}
+    ]
     structural = {
         "journal_cursor_monotonic": cursor_monotonic,
         "event_identity_idempotent": idempotent,
@@ -1250,10 +1356,19 @@ def _run_seed(
         "no_change_completed": no_change_completed,
         "resume_without_original_transcript": all(
             bool(call["quality"].get("resume_continuity", True))
-            for call in seed_calls
-            if call["turn"] == 30
+            for call in resume_calls
         ),
     }
+    if len(fixture.turns) == ENDURANCE_TURNS:
+        trend_by_turn = {row["turn"]: row for row in context_trend}
+        restart = trend_by_turn[ENDURANCE_CHECKPOINTS[0]]
+        final = trend_by_turn[ENDURANCE_CHECKPOINTS[-1]]
+        structural["bounded_context_after_second_restart"] = (
+            int(final["a_estimated_input_tokens"])
+            > int(restart["a_estimated_input_tokens"])
+            and int(final["b_estimated_input_tokens"])
+            <= int(restart["b_estimated_input_tokens"]) + 256
+        )
     arm_success = {
         arm: _task_success(
             [call for call in seed_calls if call["arm"] == arm]
@@ -1346,6 +1461,7 @@ def _call_report(
 def _aggregate(
     seeds: Sequence[Mapping[str, object]],
     calls: Sequence[Mapping[str, object]],
+    checkpoints: Sequence[int],
 ) -> dict[str, object]:
     observed_available = all(
         _mapping(
@@ -1356,10 +1472,10 @@ def _aggregate(
         for call in calls
     )
     primary_basis = "observed" if observed_available else "estimated"
-    primary = _token_summary(calls, primary_basis)
-    estimated = _token_summary(calls, "estimated")
+    primary = _token_summary(calls, primary_basis, checkpoints)
+    estimated = _token_summary(calls, "estimated", checkpoints)
     observed = (
-        _token_summary(calls, "observed")
+        _token_summary(calls, "observed", checkpoints)
         if observed_available
         else {"status": "not_evaluated", "basis": "observed"}
     )
@@ -1430,17 +1546,19 @@ def _aggregate(
 def _token_summary(
     calls: Sequence[Mapping[str, object]],
     basis: str,
+    checkpoints: Sequence[int],
 ) -> dict[str, object]:
     rows = []
     per_seed = []
     for seed in SEEDS:
         seed_a = 0
         seed_b = 0
-        for checkpoint in STAGE1_CHECKPOINTS:
+        for checkpoint in checkpoints:
             a = _call_input_tokens(calls, seed, checkpoint, "A", basis)
             b = _call_input_tokens(calls, seed, checkpoint, "B", basis)
             saved = a - b
             percent = saved / a * 100 if a > 0 else 0.0
+            minimum = _REDUCTION_GATES.get(checkpoint)
             rows.append(
                 {
                     "seed": seed,
@@ -1449,9 +1567,9 @@ def _token_summary(
                     "b_input_tokens": b,
                     "saved_input_tokens": saved,
                     "input_reduction_percent": round(percent, 3),
-                    "minimum_required_percent": _REDUCTION_GATES[checkpoint],
+                    "minimum_required_percent": minimum,
                     "gate_passed": (
-                        a > 0 and percent >= _REDUCTION_GATES[checkpoint]
+                        None if minimum is None else a > 0 and percent >= minimum
                     ),
                 }
             )
@@ -1484,7 +1602,11 @@ def _token_summary(
         ),
         "worst_seed": worst["seed"],
         "worst_seed_reduction_percent": worst["input_reduction_percent"],
-        "all_reduction_gates_passed": all(row["gate_passed"] for row in rows),
+        "all_reduction_gates_passed": all(
+            row["gate_passed"]
+            for row in rows
+            if row["minimum_required_percent"] is not None
+        ),
     }
 
 
@@ -1524,7 +1646,11 @@ def _quality_checks(
             "next_action": False,
             "unknown_information": False,
             "repository_evidence_consistent": False,
-            "resume_continuity": False if checkpoint == 30 else True,
+            "resume_continuity": (
+                False
+                if checkpoint in {STAGE1_TURNS, ENDURANCE_TURNS}
+                else True
+            ),
         }
     expected_mapping = expected.as_mapping()
     return {
@@ -1549,7 +1675,7 @@ def _quality_checks(
         ),
         "resume_continuity": (
             value.get("prior_transcript_required") is False
-            if checkpoint == 30
+            if checkpoint in {STAGE1_TURNS, ENDURANCE_TURNS}
             else True
         ),
     }
