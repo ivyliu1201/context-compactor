@@ -843,10 +843,12 @@ def render_markdown_report(report: Mapping[str, object]) -> str:
             "|---|---:|",
         )
     )
-    for name, passed in _mapping(
+    quality_gates = _mapping(
         aggregate["quality_gates"],
         "quality gates",
-    ).items():
+    )
+    for name in sorted(quality_gates):
+        passed = quality_gates[name]
         lines.append(f"| `{name}` | {'pass' if passed else 'fail'} |")
     lines.extend(
         (
