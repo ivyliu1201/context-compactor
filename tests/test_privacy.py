@@ -103,6 +103,24 @@ class PrivacyFilterTests(unittest.TestCase):
         self.assertFalse(result.truncated)
         self.assertFalse(contains_known_secret(instruction))
 
+    def test_redacted_output_is_safe_to_check_again(self) -> None:
+        synthetic = "secret-" + "synthetic-" + "value"
+        original = (
+            f"Authorization: Bearer {synthetic}; "
+            f"password={synthetic}"
+        )
+
+        first = sanitize_prompt(original)
+        second = sanitize_prompt(first.text)
+
+        self.assertEqual(second.text, first.text)
+        self.assertFalse(contains_known_secret(first.text))
+        self.assertTrue(
+            contains_known_secret(
+                first.text + " api_key=another-synthetic-secret"
+            )
+        )
+
     def test_unsafe_or_policy_weakening_input_is_rejected(self) -> None:
         cases = (
             {"text": "before\x00after"},

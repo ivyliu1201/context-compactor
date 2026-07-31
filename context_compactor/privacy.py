@@ -128,11 +128,15 @@ def contains_known_secret(
     *,
     high_risk_environment_names: Optional[Collection[str]] = None,
 ) -> bool:
-    result = sanitize_prompt(
-        text,
-        high_risk_environment_names=high_risk_environment_names,
+    _validate_input(text, MAX_RETAINED_CHARACTERS)
+    return any(
+        sanitize_prompt(
+            segment,
+            high_risk_environment_names=high_risk_environment_names,
+        ).redaction_count
+        > 0
+        for segment in text.split(REDACTION_MARKER)
     )
-    return result.redaction_count > 0
 
 
 def _validate_input(text: str, max_characters: int) -> None:

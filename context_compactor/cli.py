@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from . import __version__
+from .host import (
+    HOST_CLAUDE,
+    HOST_CODEX,
+    MAX_HOOK_PAYLOAD_BYTES,
+    HookError,
+    diagnostic_line,
+    handle_hook,
+)
 from .journal import Journal
 from .launcher import launch_worker
 from .model import CommandModel
@@ -41,6 +49,11 @@ def _parser() -> argparse.ArgumentParser:
     spawn.add_argument("--model-timeout-seconds", type=float, default=120.0)
     spawn.add_argument("--max-attempts", type=int, default=3)
     spawn.add_argument("--model-command", nargs=argparse.REMAINDER, required=True)
+
+    hook = commands.add_parser("hook")
+    hook.add_argument("--host", choices=(HOST_CODEX, HOST_CLAUDE), required=True)
+    hook.add_argument("--project-root", type=Path)
+    hook.add_argument("--model-command", nargs=argparse.REMAINDER, required=True)
     return parser
 
 
@@ -90,6 +103,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             max_attempts=args.max_attempts,
         )
         print(json.dumps(result.as_mapping(), separators=(",", ":")))
+        return 0
+
+    if args.command == "hook":
+        payload = sys.stdin.buffer.read(MAX_HOOK_PAYLOAD_BYTES + 1)
+        try:
+            result = handle_hook(
+                args.host,
+                payload,
+                args.model_command,
+                project_root=args.project_root,
+            )
+        except HookError as error:
+            print(error.diagnostic(), file=sys.stderr)
+            return 1
+        sys.stdout.buffer.write(result.output)
+        sys.stdout.buffer.flush()
+        for category in result.diagnostic_categories:
+            print(diagnostic_line(result.event_id, category), file=sys.stderr)
         return 0
 
     print("unsupported command", file=sys.stderr)
