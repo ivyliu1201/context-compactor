@@ -7,7 +7,63 @@ public release.
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+
+- Added a standard-mode-only model compaction flow with a Python 3.9+ standard-library
+  worker process.
+- Added repository-readable state files (`.context-compactor/state.yaml`,
+  `.context-compactor/state.backup.yaml`) and a lightweight
+  `.context-compactor/events.sqlite` journal.
+- Added a Windows PowerShell 5.1+ source installer (`scripts/install.ps1`) with
+  project actions for `install`, `update`, `status`, `doctor`, and
+  `uninstall`.
+
+### Changed
+
+- Switched runtime, install, and storage behavior from the native executable
+  model to a source-only, Python-detached worker model.
+- Changed install/update to run through an external `ModelCommandJson` adapter
+  implementing `context-compactor/model/v1`.
+- Changed private installation root defaults to
+  `%LOCALAPPDATA%\context-compactor`, which contains the managed virtual
+  environment.
+
+### Removed
+
+- Removed the legacy Go runtime and native executable/release distribution flow.
+- Removed the legacy provider wrapper scripts and native CI release path.
+
+### Breaking Changes
+
+- Standard releases are source-only and no longer ship native executable assets.
+- Native provider wrappers are removed; an external model adapter must be supplied.
+- Legacy data migration to v3 behavior is read-only preview then explicit apply, and
+  the original `.context-compactor/context.db` is never modified.
+
+### Migration
+
+- Run read-only migration preview before apply for existing
+  `.context-compactor/context.db`; do not modify or delete the original DB.
+- `state.yaml` no longer stores raw prompt/transcript/log text.
+- `events.sqlite` stores masked prompt text only, limited to 8,000 Unicode chars,
+  and clears prompt text immediately on success with additional scrubbing within
+  seven days.
+
+### Verification
+
+- Formal combined-standard evidence:
+  - 30-turn release runs on seeds 17/29/43 (signed-in Codex CLI `gpt-5.6-sol/high`)
+    reduced tokens by 68.66%, 68.65%, 68.66%.
+  - 60-turn endurance runs on seeds 17/29/43 reduced tokens by 81.97%, 81.97%, 82.15%.
+  - Correctness, privacy, state-budget, and failed-candidate-corruption gates passed.
+- Windows CI now covers Python 3.9/3.13 syntax and tests plus PowerShell syntax
+  checks.
+
+### Known Issues
+
+- Formal benchmark reruns require signed-in Codex CLI calls.
+- Secret masking covers the defined API-key/Bearer/token/password/private-key
+  patterns; unknown formats are not guaranteed to be detected.
 
 ## [2.0.2] - 2026-07-30
 

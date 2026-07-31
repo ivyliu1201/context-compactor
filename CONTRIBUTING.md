@@ -1,34 +1,56 @@
 # Contributing
 
-Contributions should be small, focused, and supported by repository evidence.
-Read the relevant code, tests, and `SPEC.md` before proposing a behavior
-change. Open an issue before starting a larger behavior change so its scope can
-be agreed first.
+Contributions should be small, evidence-backed, and scoped to one change.
+Before proposing behavior changes, read [SPEC.md](SPEC.md), [README.md](README.md),
+and the relevant code and tests.
 
 ## Requirements
 
-- Go 1.26 or newer
-- No additional dependencies are required for the standard verification flow
+- Python 3.9+ standard library only.
+- Windows installer work requires PowerShell 5.1+.
+- No Go toolchain or native build is required for standard flow.
 
-Run the required checks before opening a pull request:
+## Verification
+
+- Main test command:
+  `python -B -m unittest discover -s tests`
+- Python syntax check (AST, equivalent to CI): parse all `*.py` files under
+  `context_compactor`, `scripts`, and `tests`.
 
 ```sh
-go test ./...
-go vet ./...
-go build -trimpath -ldflags="-s -w" -o context-compactor-windows-amd64.exe ./cmd/context-compactor
+python -B -c "import ast, pathlib; paths=[*pathlib.Path('context_compactor').rglob('*.py'), *pathlib.Path('scripts').rglob('*.py'), *pathlib.Path('tests').rglob('*.py')]; [ast.parse(p.read_text(encoding='utf-8')) for p in paths]"
 ```
 
-The repository CI at `.github/workflows/ci.yml` runs the same checks for
-Windows amd64.
+- PowerShell syntax check for installer and script files:
 
-## Privacy and Test Data
+```powershell
+$failures = @()
+Get-ChildItem -LiteralPath scripts -Filter *.ps1 | ForEach-Object {
+  $tokens = $null
+  $errors = $null
+  [System.Management.Automation.Language.Parser]::ParseFile(
+    $_.FullName,
+    [ref]$tokens,
+    [ref]$errors
+  ) | Out-Null
+  if ($errors.Count -gt 0) {
+    $failures += "$($_.Name): $($errors -join '; ')"
+  }
+}
+if ($failures.Count -gt 0) {
+  throw ($failures -join [Environment]::NewLine)
+}
+```
 
-Do not commit secrets, credentials, or complete prompts. Test fixtures must not
-contain sensitive data. Use bounded, redacted examples when a fixture needs to
-represent user-provided content.
+CI runs on Windows with Python 3.9 and Python 3.13. Reference:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-## Pull Requests
+## Privacy test fixtures
 
-Describe the behavior being changed, the relevant risks, and the verification
-commands that completed. Keep unrelated refactors and formatting changes out
-of the pull request.
+Do not include real secrets, full prompts, transcripts, or logs in fixtures.
+Use bounded, synthetic redacted examples only.
+
+## Pull request reports
+
+Report what changed in behavior, relevant risks, and commands actually run.
+Avoid unrelated refactors, dependency churn, and formatting-only edits.

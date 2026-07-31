@@ -1,51 +1,65 @@
 # Privacy
 
-`context-compactor` is a local-first context compression tool for coding
-agents. It processes hook input locally to create bounded structured memory for
-later turns.
+`context-compactor` is a local-first tool in standard mode only.
 
-## Prompt Handling
+## Local data files
 
-User-prompt hooks may retain a local extraction job so the detached worker can
-make a background memory decision. Before insertion, credential-like spans are
-replaced with `[REDACTED]`; the remaining text is limited to 8,000 Unicode
-characters. Jobs expire after seven days and each repository is capped at 500
-jobs.
+- `.context-compactor/state.yaml` is the readable derived state.
+- `.context-compactor/state.backup.yaml` is its backup.
+- `.context-compactor/events.sqlite` is the lightweight journal.
 
-The bounded prompt field is not stored in event rows and is never rendered
-directly into compiled capsules. A model receives the redacted job and returns
-either `no_change` or a typed update; only validated durable facts and bounded
-evidence can become memory. Deterministic protocol and privacy validation runs
-before an update can become durable.
+`state.yaml` and `state.backup.yaml` never store raw prompts, transcripts, logs,
+tool output, reasoning text, or credentials.
 
-Production exposes one `standard` privacy policy. Its version 1 wire value is
-`balanced` for compatibility. Existing `strict` and `audit` values remain
-readable as legacy data but are rejected for new production runs.
+## Redaction and prompt handling
 
-## Local Files
+Before a prompt is written to the journal, defined secret spans are replaced with
+`[REDACTED]`:
 
-Repository-local SQLite state is stored at
-`.context-compactor/context.db`. Installation metadata is stored at
-`.context-compactor/install.json`.
+- API-key style environment assignments.
+- `Authorization: Bearer ...` and `Authorization: Basic ...` patterns.
+- `bearer-token` style assignments.
+- `password` and `secret` assignments.
+- private-key blocks.
 
-Managed Codex hook configuration is stored in `.codex/hooks.json`. Managed
-Claude hook configuration is stored in `.claude/settings.local.json`.
+Unknown secret formats are not guaranteed to be detected.
 
-## Model Providers
+`events.sqlite.prompt_text` stores only redacted text, is limited to 8,000
+Unicode characters, and remains local. `prompt_text` is cleared immediately after
+successful completion; any still-retained `prompt_text` is scrubbed no later than
+seven days. Non-prompt event/job metadata may remain. The journal is capped at
+500 job rows per repository.
 
-Background extraction invokes the same signed-in Codex or Claude host CLI that
-delivered the hook. The bounded redacted prompt may therefore be sent to that
-CLI's configured model provider according to its own settings and policies.
-`context-compactor` does not control provider retention or make claims about
-it. Claude API-key environment variables are withheld from child commands by
-default unless `CONTEXT_COMPACTOR_USE_ANTHROPIC_API_KEY=1` is explicitly set.
+## Model boundary
 
-## Removing Local State
+An external model adapter receives JSON in the `context-compactor/model/v1`
+shape containing the `redacted_prompt` and previous derived state. No provider
+adapter is bundled.
 
-Uninstall removes only managed hook definitions. It does not imply that the
-local journal or memory state is deleted.
+The user’s configured command controls network use and provider selection. If the
+command sends data remotely, the provider’s own policy applies; this project makes
+no retention claims about those providers.
 
-To remove repository-local state, first uninstall the managed hooks and wait
-for any detached repository worker to stop, then delete the repository's
-`.context-compactor` directory yourself. Doing so permanently removes prompt
-jobs and resume memory for that repository.
+## Durable output policy
+
+Persistent model output is accepted only when it is exactly `no_change` or a
+complete, validated updated state. Outputs are deterministically validated before
+writing and must not copy prompt/transcript/logs/tool output/reasoning or
+credentials. A candidate state containing any defined secret pattern is rejected
+before publication.
+
+## Managed installation and state
+
+- Host configs are managed in `.codex/hooks.json` and
+  `.claude/settings.local.json`.
+- Global installation metadata is under the selected install root (default:
+  `%LOCALAPPDATA%\context-compactor`), including `install.json` and per-project
+  manifests.
+- Uninstall removes only managed hooks and manifests, and removes the managed
+  private installation only when no projects remain.
+- Uninstall does not delete repository `.context-compactor` state.
+- To remove repository state, do it after uninstall and worker shutdown; this is a
+  manual action and is permanent.
+
+Legacy migration from `.context-compactor/context.db` is read-only and never
+modifies or deletes the original database.

@@ -2,147 +2,88 @@
 
 [English](README.md)
 
-`context-compactor` 是一個早期開發中的 local-first coding agent 上下文壓縮工具。
-它能從一般自然語言保留任務目標、限制、決策與實作狀態，prompt retention
-則維持長度受限、敏感資訊遮罩、本機保存且有期限。
+`context-compactor` 是供 coding agents 使用的 local-first context 壓縮產品。
 
-> 狀態：protocol、local SQLite journal、deterministic reducer/compiler、
-> Codex 與 Claude hook runtime、背景自然語言記憶判斷，以及 detached capsule
-> publication 已完成實作。專案已有公開 Windows amd64 release，且原始碼安裝仍
-> 可供專案本地 Codex/Claude 使用。
+## 產品
 
-## 設計目標
+- 僅提供 `standard` 路徑。
+- Python 標準函式庫執行環境，Python 3.9+。
+- 模型更新由獨立 Python worker 處理。
+- 可讀狀態檔為 `.context-compactor/state.yaml`。
+- 備援狀態檔為 `.context-compactor/state.backup.yaml`。
+- 輕量 journal 為 `.context-compactor/events.sqlite`。
 
-- 在長 session、compact 與 resume 後保留 critical requirements 與否定限制。
-- Repository 檔案與使用者明確指令是事實來源；壓縮記憶是可重建的衍生檢視。
-- 保存結構化的記憶增量操作，不讓模型直接覆寫整份狀態文件。
-- Production 只使用 standard privacy：prompt job 先遮罩疑似 secret，最多保留
-  8,000 個 Unicode 字元、七天、每個 repository 500 筆，且只存在本機。
-- 使用同一套 Go codebase 支援 Windows、macOS 與 Linux。
-- 以單一 60 輪流程，在第 10、30、50、60 輪驗證 token 降幅與任務恢復品質。
+## Windows source installer
 
-## 目前範圍
-
-Repository 目前包含 `context-compactor/v1` protocol 型別、deterministic validation、
-每個 repository 各自使用的 SQLite event journal、deterministic reducer/compiler、
-Codex／Claude hook adapters 與可執行的本機 runtime。User-prompt hook 不會等待
-model；detached repository worker 會透過目前已登入的 host CLI，取得 `no_change`
-或 typed memory update。通過 deterministic validation 的 operations 只有在 memory
-確實改變時才會重建 view 並排入 capsule publication，下一個支援的 hook 即可注入
-bounded context。行為規格請參閱 [SPEC.md](SPEC.md)，安裝與管理方式請參考本篇
-「安裝」章節。
-
-## 開發
-
-需求：
-
-- Go 1.26 或更新版本
-
-執行目前的驗證：
-
-```sh
-go test ./...
-go vet ./...
-```
-
-行為契約與 benchmark Gate 請見 [SPEC.md](SPEC.md)。
-
-執行含 foreground model 檢查的正式 benchmark：
-
-```sh
-export OPENAI_API_KEY="..."
-docker run --rm -e OPENAI_API_KEY -v "$PWD:/workspace" -w /workspace \
-  -e GOCACHE=/workspace/.cache/go-build \
-  -e GOMODCACHE=/workspace/.cache/go-mod \
-  golang:1.26 go run ./cmd/context-compactor benchmark --matrix formal \
-  --model-command /usr/bin/python3 \
-  --model-arg /workspace/scripts/foreground_model_openai.py
-```
-
-可用 `OPENAI_FOREGROUND_MODEL` 覆寫預設 foreground model。未設定 model command
-時，benchmark 仍會回報 token 與 deterministic gate，但 model-dependent gate 會是
-`not_evaluated`。
-
-## 安裝
-
-### 從 release 安裝或更新（Windows amd64）
-
-在 Windows PowerShell 5.1+ 執行以下指令，即可安裝 latest release 或更新既有的
-managed installation：
+- 使用 `scripts/install.ps1`（PowerShell 5.1+，僅限 Windows）。
+- 預設將來源複製到 `%LOCALAPPDATA%\context-compactor` 下的私有 venv。
+- 支援 `install`、`update`、`status`、`doctor`、`uninstall`。
+- 支援 `AgentHost`：`codex`、`claude`、`all`。
+- `install` 與 `update` 需要 `-ModelCommandJson`。
 
 ```powershell
-irm https://raw.githubusercontent.com/ivyliu1201/context-compactor/main/scripts/install-release.ps1 | iex
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 `
+  -Action install -ProjectRoot . -AgentHost all `
+  -ModelCommandJson '["python","C:\\path\\to\\model-adapter.py"]'
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 `
+  -Action update -ProjectRoot . -AgentHost all `
+  -ModelCommandJson '["python","C:\\path\\to\\model-adapter.py"]'
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action status -ProjectRoot . -AgentHost all
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action doctor -ProjectRoot . -AgentHost all
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action uninstall -ProjectRoot . -AgentHost all
 ```
 
-安裝器會從 GitHub latest release 下載 executable 與 `checksums.txt`、驗證
-SHA-256，並依序執行 `self-check`、`install`、`status`、`doctor`。
+本產品不含內建 provider adapter。請使用外部 adapter，需實作 `context-compactor/model/v1`：
 
-- Cyan：進行中。
-- Green：成功。
-- Yellow：需處理。
-- Red：失敗。
-- 不會向一般使用者直接顯示原始 CLI JSON。
-- 未指定 `-ProjectRoot` 時，Codex config 與 install manifest 會放在使用者
-  `HOME`，且 Hook command 不會固定帶 `--project-root`。
-- 專案 root 依每次 Codex Hook payload 的 `cwd` 決定。
-- 指定 `-ProjectRoot` 時，仍保留 project-local 固定 root 行為。
-- Executable 會安裝到 `%LOCALAPPDATA%\context-compactor`。
-- Codex 可能仍需透過 `/hooks` 完成 review 或 trust。
+- 從 stdin 讀取一個 JSON request。
+- 僅輸出一個 JSON response 到 stdout：
+  - `{"outcome":"no_change"}`
+  - `{"outcome":"updated","state":{...complete state schema...}}`
 
-### 從 source 安裝（專案本地，需 Docker）
+## 隱私
+
+- `state.yaml` 不會保存原始 prompt、transcript、或 log。
+- `events.sqlite` 僅可暫存遮罩後的 prompt，單筆上限 8000 字元。
+- 成功後必須立即清除暫存 prompt，並最長保留 7 天。
+- 已定義的 API-key、`Authorization: Bearer`、`Authorization: Basic`、bearer-token、password/secret assignment、private-key 樣式在寫入前皆需遮罩。
+- 不保證可偵測到未知的新型機密格式。
+- 詳見 [docs/PRIVACY.md](docs/PRIVACY.md)。
+
+## 舊版資料庫遷移
+
+```
+python -m context_compactor migrate preview --project-root .
+python -m context_compactor migrate apply --project-root .
+```
+
+遷移會讀取舊版 `.context-compactor/context.db`，不會修改也不會刪除原始資料庫。
+
+## 驗證
+
+- `python -B -m unittest discover -s tests`
+- 驗證結果：68 測試成功執行，含 2 個 opt-in skip。
+- 基準報告：[docs/benchmark-report-v3-2026-07-31.zh-TW.md](docs/benchmark-report-v3-2026-07-31.zh-TW.md)
+- 使用已登入的 Codex CLI 實際執行，模型為 `gpt-5.6-sol` 且 reasoning effort 為 `high`。
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot .
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost claude
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ProjectRoot . -AgentHost all
+python -B scripts/benchmark_v3.py --stage release `
+  --output benchmark-results/context-compactor-v3-standard-30turn-2026-07-31.json `
+  --report docs/benchmark-report-v3-2026-07-31.zh-TW.md
+
+python -B scripts/benchmark_v3.py --stage endurance `
+  --output benchmark-results/context-compactor-v3-standard-60turn-2026-07-31.json `
+  --report docs/benchmark-report-v3-2026-07-31.zh-TW.md `
+  --stage1-result benchmark-results/context-compactor-v3-standard-30turn-2026-07-31.json
 ```
 
-### 移除全域 Codex Hook
-
-```powershell
-$m = Get-Content (Join-Path $HOME ".context-compactor\install.json") -Raw | ConvertFrom-Json; & $m.hosts.codex.executable uninstall --host codex --project-root $HOME
-```
-
-此 CLI 移除僅限本安裝器管理的 Hook 定義與 manifest entry，不會刪除已安裝的
-executable。
-
-## 自然語言記憶
-
-不需要特殊前綴，也不需要使用「記住」句型。例如：
-
-```text
-這個專案的 timestamp 必須使用 UTC。
-先完成 detached worker integration，不要更動 benchmark flow。
-先前的 Windows-only 限制已經解除。
-```
-
-Hook 會保存長度受限且已遮罩疑似 secret 的 extraction job，並自動啟動既有
-detached worker。背景 model 可以提出 typed goal、acceptance criterion、
-constraint、decision、blocker、question、task、file 或已驗證的 test result；
-任何內容進入 memory 前都會通過 deterministic validation。只要求解釋、翻譯、
-一般知識，或其他不影響專案的 prompt，會完成為 `no_change`，也不會發布新 capsule。
-
-Codex 預設透過已登入的 `codex` CLI，routine 使用 `gpt-5.4-mini`、repair 使用
-`gpt-5.4`；Claude 預設透過已登入的 `claude` CLI，分別使用 `haiku` 與
-`sonnet`。可用下列環境變數覆寫 executable、model 與 Codex reasoning effort：
-
-- `CONTEXT_COMPACTOR_CODEX_COMMAND`
-- `CONTEXT_COMPACTOR_CLAUDE_COMMAND`
-- `CONTEXT_COMPACTOR_CODEX_ROUTINE_MODEL`
-- `CONTEXT_COMPACTOR_CODEX_REPAIR_MODEL`
-- `CONTEXT_COMPACTOR_CLAUDE_ROUTINE_MODEL`
-- `CONTEXT_COMPACTOR_CLAUDE_REPAIR_MODEL`
-- `CONTEXT_COMPACTOR_CODEX_REASONING`
-- `CONTEXT_COMPACTOR_USE_ANTHROPIC_API_KEY=1`
-
-## 隱私模式
-
-Production 只提供 `standard` policy；為了相容既有資料，它在 version 1 wire
-仍使用 `balanced` 值。舊的 `strict` 與 `audit` 資料仍可讀，但不能用於新的
-production run。受限的 prompt field 只存在 extraction-job table，不會直接被
-render；只有通過驗證的 durable facts 與短 evidence 可能進入 compiled context。
-Retention 與 model provider 邊界請見 [docs/PRIVACY.md](docs/PRIVACY.md)。
+- Release 階段（30 輪）：通過，seed `17,29,43`，第 30 輪節省率 `68.66%`、`68.65%`、`68.66%`；整體中位數 `58.42%`；Hook/background 最差 `17.021ms/20.838ms`。
+- Endurance 階段（60 輪）：通過，seed 同上，第 60 輪節省率 `81.97%`、`81.97%`、`82.15%`；整體中位數 `79.83%`；Hook/background 最差 `24.460ms/30.280ms`。
+- 通過 correctness、privacy、state-budget、failed-candidate-corruption 各項 gate。
 
 ## 授權
 
-本專案採用 [Apache License 2.0](LICENSE)。
+[Apache License 2.0](LICENSE)
