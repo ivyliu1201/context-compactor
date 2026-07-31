@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 
 from . import __version__
 from .journal import Journal
+from .launcher import launch_worker
 from .model import CommandModel
 from .paths import project_paths, resolve_project_root
 from .state import ProjectState, load_state, load_state_file, publish_state
@@ -35,6 +36,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--model-timeout-seconds", type=float, default=120.0)
     run.add_argument("--max-attempts", type=int, default=3)
     run.add_argument("--model-command", nargs=argparse.REMAINDER, required=True)
+    spawn = worker_commands.add_parser("spawn")
+    spawn.add_argument("--project-root", type=Path)
+    spawn.add_argument("--model-timeout-seconds", type=float, default=120.0)
+    spawn.add_argument("--max-attempts", type=int, default=3)
+    spawn.add_argument("--model-command", nargs=argparse.REMAINDER, required=True)
     return parser
 
 
@@ -73,6 +79,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 max_attempts=args.max_attempts,
                 retry_delays=(timedelta(seconds=5), timedelta(seconds=30)),
             ).drain()
+        print(json.dumps(result.as_mapping(), separators=(",", ":")))
+        return 0
+
+    if args.command == "worker" and args.worker_command == "spawn":
+        result = launch_worker(
+            args.project_root,
+            args.model_command,
+            model_timeout_seconds=args.model_timeout_seconds,
+            max_attempts=args.max_attempts,
+        )
         print(json.dumps(result.as_mapping(), separators=(",", ":")))
         return 0
 
