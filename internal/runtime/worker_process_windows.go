@@ -14,6 +14,7 @@ const (
 	windowsDetachedProcess             = 0x00000008
 	windowsCreateNewProcessGroup       = 0x00000200
 	windowsCreateBreakawayFromJob      = 0x01000000
+	windowsCreateNoWindow              = 0x08000000
 	windowsDetachedWorkerFallbackFlags = windowsDetachedProcess |
 		windowsCreateNewProcessGroup
 	windowsDetachedWorkerFlags = windowsDetachedProcess |
@@ -50,6 +51,14 @@ func startDetachedProcess(executable string, args []string) error {
 		}
 	}
 	return nil
+}
+
+func configureBackgroundModelCommand(command *exec.Cmd) {
+	if command.SysProcAttr == nil {
+		command.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	command.SysProcAttr.HideWindow = true
+	command.SysProcAttr.CreationFlags |= windowsCreateNoWindow
 }
 
 func shouldRetryDetachedWorkerWithoutBreakaway(err error) bool {

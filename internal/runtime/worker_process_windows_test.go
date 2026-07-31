@@ -4,9 +4,26 @@ package runtime
 
 import (
 	"fmt"
+	"os/exec"
 	"syscall"
 	"testing"
 )
+
+func TestBackgroundModelCommandDoesNotCreateConsoleWindow(t *testing.T) {
+	command := exec.Command("codex")
+
+	configureBackgroundModelCommand(command)
+
+	if command.SysProcAttr == nil {
+		t.Fatal("background model command has no Windows process attributes")
+	}
+	if !command.SysProcAttr.HideWindow {
+		t.Fatal("background model command does not hide its window")
+	}
+	if command.SysProcAttr.CreationFlags&windowsCreateNoWindow == 0 {
+		t.Fatal("background model command can create a console window")
+	}
+}
 
 func TestDetachedWorkerBreaksAwayFromParentJob(t *testing.T) {
 	if windowsDetachedWorkerFlags&windowsCreateBreakawayFromJob == 0 {

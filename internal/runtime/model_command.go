@@ -246,6 +246,7 @@ func (runner HostModelRunner) invokeCodex(
 		reasoning,
 	)
 	command := exec.CommandContext(ctx, executable, args...)
+	configureBackgroundModelCommand(command)
 	command.Dir = call.ProjectRoot
 	command.Stdin = strings.NewReader(call.Prompt)
 	command.Env = append(
@@ -278,6 +279,7 @@ func (runner HostModelRunner) invokeClaude(
 	}
 	args := claudeModelArgs(call.Model, call.Prompt)
 	command := exec.CommandContext(ctx, executable, args...)
+	configureBackgroundModelCommand(command)
 	command.Dir = call.ProjectRoot
 	command.Env = append(
 		filterAnthropicEnvironment(os.Environ(), runner.UseAnthropicAPIKey),

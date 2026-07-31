@@ -29,3 +29,5 @@ func startDetachedProcess(executable string, args []string) error {
 	}
 	return nil
 }
+
+func configureBackgroundModelCommand(_ *exec.Cmd) {}
