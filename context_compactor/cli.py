@@ -28,6 +28,11 @@ from .management import (
     uninstall,
     update_source,
 )
+from .migration import (
+    MigrationError,
+    apply_legacy_migration,
+    preview_legacy_migration,
+)
 from .model import CommandModel
 from .paths import ProjectPathError, project_paths, resolve_project_root
 from .state import ProjectState, load_state, load_state_file, publish_state
@@ -45,6 +50,15 @@ def _parser() -> argparse.ArgumentParser:
     state_commands = state.add_subparsers(dest="state_command", required=True)
     for name in ("init", "validate"):
         command = state_commands.add_parser(name)
+        command.add_argument("--project-root", type=Path)
+
+    migration = commands.add_parser("migrate")
+    migration_commands = migration.add_subparsers(
+        dest="migration_command",
+        required=True,
+    )
+    for name in ("preview", "apply"):
+        command = migration_commands.add_parser(name)
         command.add_argument("--project-root", type=Path)
 
     worker = commands.add_parser("worker")
@@ -114,6 +128,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.state_command == "validate":
             load_state(project_root)
             return 0
+
+    if args.command == "migrate":
+        try:
+            project_root = resolve_project_root(args.project_root)
+            if args.migration_command == "preview":
+                report = preview_legacy_migration(project_root)
+            else:
+                report = apply_legacy_migration(project_root)
+        except (MigrationError, ProjectPathError) as error:
+            print(
+                json.dumps(
+                    {"ok": False, "error": str(error)},
+                    separators=(",", ":"),
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        print(json.dumps(report, separators=(",", ":")))
+        return 0
 
     if args.command == "worker" and args.worker_command == "run":
         project_root = resolve_project_root(args.project_root)
