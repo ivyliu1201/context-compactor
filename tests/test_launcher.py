@@ -15,7 +15,6 @@ from context_compactor.launcher import (
     WINDOWS_CREATE_BREAKAWAY_FROM_JOB,
     WINDOWS_CREATE_NEW_PROCESS_GROUP,
     WINDOWS_CREATE_NO_WINDOW,
-    WINDOWS_DETACHED_PROCESS,
     WINDOWS_FALLBACK_CREATION_FLAGS,
     WINDOWS_PRIMARY_CREATION_FLAGS,
     detached_process_options,
@@ -76,7 +75,6 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(options["stderr"], subprocess.DEVNULL)
         self.assertTrue(options["close_fds"])
         self.assertEqual(flags, WINDOWS_PRIMARY_CREATION_FLAGS)
-        self.assertTrue(flags & WINDOWS_DETACHED_PROCESS)
         self.assertTrue(flags & WINDOWS_CREATE_NEW_PROCESS_GROUP)
         self.assertTrue(flags & WINDOWS_CREATE_BREAKAWAY_FROM_JOB)
         self.assertTrue(flags & WINDOWS_CREATE_NO_WINDOW)
