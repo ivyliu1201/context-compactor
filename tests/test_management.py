@@ -41,6 +41,14 @@ def _which(directory: Path, *available_hosts: str):
     return resolve
 
 
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(parent.resolve(strict=False))
+    except ValueError:
+        return False
+    return True
+
+
 def _fake_private_venv(
     installation: Path,
     _system_python: Path,
@@ -213,7 +221,7 @@ class ManagementTests(unittest.TestCase):
             private_python = Path(installed["python_interpreter"])
             self.assertTrue(private_python.is_file())
             self.assertTrue(
-                str(private_python).startswith(str(installation / ".venv"))
+                _is_within(private_python, installation / ".venv")
             )
             source_path = Path(installed["active_source"]["path"])
             self.assertTrue((source_path / "context_compactor").is_dir())

@@ -70,6 +70,14 @@ class FreshProjectE2EError(RuntimeError):
     """Raised when the isolated E2E runner cannot produce a safe report."""
 
 
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(parent.resolve(strict=False))
+    except ValueError:
+        return False
+    return True
+
+
 def run_fresh_project_e2e(source_root: Path) -> dict[str, object]:
     source = source_root.resolve(strict=True)
     _validate_prerequisites(source)
@@ -143,7 +151,7 @@ def run_fresh_project_e2e(source_root: Path) -> dict[str, object]:
         )
         private_venv_installed = (
             private_python.is_file()
-            and str(private_python).startswith(str(installation / ".venv"))
+            and _is_within(private_python, installation / ".venv")
         )
         hook_definition_healthy = bool(
             install_report.get("hooks")
