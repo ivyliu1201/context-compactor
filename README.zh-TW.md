@@ -12,32 +12,42 @@
 - 可讀狀態檔為 `.context-compactor/state.yaml`。
 - 備援狀態檔為 `.context-compactor/state.backup.yaml`。
 - 輕量 journal 為 `.context-compactor/events.sqlite`。
+- Codex `SessionStart` 只匹配 `startup`，且不會建立工作或啟動模型 worker。
 
 ## Windows source installer
 
-- 使用 `scripts/install.ps1`（PowerShell 5.1+，僅限 Windows）。
-- 預設將來源複製到 `%LOCALAPPDATA%\context-compactor` 下的私有 venv。
+- 需要 PowerShell 5.1+、Git 與 Python 3.9+（僅限 Windows）；預設內建
+  adapter 另外需要已登入的 Codex CLI。
+- 預設將版本化來源與私有 venv 安裝到
+  `%LOCALAPPDATA%\context-compactor`。
 - 支援 `install`、`update`、`status`、`doctor`、`uninstall`。
 - 支援 `AgentHost`：`codex`、`claude`、`all`。
-- `install` 與 `update` 需要 `-ModelCommandJson`。
+- 省略 `-ModelCommandJson` 時會使用內建 Codex CLI adapter；此參數仍可用來
+  明確指定外部 adapter。
+- install/update 只移除可辨識 V2 manifest 精確記錄的 V2 Hook handler，並保留
+  manifest、舊 `context.db`、專案狀態與無關的使用者 Hook。
+
+請在 clone 或解壓縮後的 source tree 根目錄執行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 `
-  -Action install -ProjectRoot . -AgentHost all `
-  -ModelCommandJson '["python","C:\\path\\to\\model-adapter.py"]'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action install -ProjectRoot . -AgentHost codex
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 `
-  -Action update -ProjectRoot . -AgentHost all `
-  -ModelCommandJson '["python","C:\\path\\to\\model-adapter.py"]'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action update -ProjectRoot . -AgentHost codex
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action status -ProjectRoot . -AgentHost all
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action status -ProjectRoot . -AgentHost codex
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action doctor -ProjectRoot . -AgentHost all
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action doctor -ProjectRoot . -AgentHost codex
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action uninstall -ProjectRoot . -AgentHost all
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action uninstall -ProjectRoot . -AgentHost codex
 ```
 
-本產品不含內建 provider adapter。請使用外部 adapter，需實作 `context-compactor/model/v1`：
+若要改用外部 adapter，可加入以下 override：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action install -ProjectRoot . -AgentHost codex -ModelCommandJson '["python","C:\\path\\to\\model-adapter.py"]'
+```
+
+外部 adapter 必須實作 `context-compactor/model/v1`：
 
 - 從 stdin 讀取一個 JSON request。
 - 僅輸出一個 JSON response 到 stdout：
@@ -65,7 +75,7 @@ python -m context_compactor migrate apply --project-root .
 ## 驗證
 
 - `python -B -m unittest discover -s tests`
-- 驗證結果：68 測試成功執行，含 2 個 opt-in skip。
+- 驗證結果：77 測試成功執行，含 2 個依環境條件 skip 的測試。
 - 基準報告：[docs/benchmark-report-v3-2026-07-31.zh-TW.md](docs/benchmark-report-v3-2026-07-31.zh-TW.md)
 - 使用已登入的 Codex CLI 實際執行，模型為 `gpt-5.6-sol` 且 reasoning effort 為 `high`。
 
@@ -81,7 +91,11 @@ python -B scripts/benchmark_v3.py --stage endurance `
 ```
 
 - Release 階段（30 輪）：通過，seed `17,29,43`，第 30 輪節省率 `68.66%`、`68.65%`、`68.66%`；整體中位數 `58.42%`；Hook/background 最差 `17.021ms/20.838ms`。
-- Endurance 階段（60 輪）：通過，seed 同上，第 60 輪節省率 `81.97%`、`81.97%`、`82.15%`；整體中位數 `79.83%`；Hook/background 最差 `24.460ms/30.280ms`。
+- Endurance 階段（60 輪）：通過，seed 同上；第 60 輪節省率為
+  `81.97%`、`81.97%`、`82.15%`；第 45 與 60 輪累計節省率為
+  `79.83%`–`79.91%`；Hook/background 最差為 `24.460ms/30.280ms`。
+- 以上為確定性 benchmark 情境中實際觀測的 input-token 降幅，不保證每個
+  live turn 或帳單成本都會得到相同比例。
 - 通過 correctness、privacy、state-budget、failed-candidate-corruption 各項 gate。
 
 ## 授權

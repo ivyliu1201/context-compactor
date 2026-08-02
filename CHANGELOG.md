@@ -7,6 +7,8 @@ public release.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-02
+
 ### Added
 
 - Added a standard-mode-only model compaction flow with a Python 3.9+ standard-library
@@ -17,16 +19,24 @@ public release.
 - Added a Windows PowerShell 5.1+ source installer (`scripts/install.ps1`) with
   project actions for `install`, `update`, `status`, `doctor`, and
   `uninstall`.
+- Added a bundled Codex CLI adapter that uses saved CLI authentication,
+  ephemeral execution, a read-only sandbox, and strict structured output.
 
 ### Changed
 
 - Switched runtime, install, and storage behavior from the native executable
   model to a source-only, Python-detached worker model.
-- Changed install/update to run through an external `ModelCommandJson` adapter
-  implementing `context-compactor/model/v1`.
+- Changed install/update to use the bundled Codex adapter when
+  `ModelCommandJson` is omitted; explicit external adapters implementing
+  `context-compactor/model/v1` remain supported.
 - Changed private installation root defaults to
   `%LOCALAPPDATA%\context-compactor`, which contains the managed virtual
   environment.
+- Changed managed Codex `SessionStart` Hooks to match `startup` only. Session
+  start remains read-only and never enqueues work or launches the model worker.
+- Changed install/update to remove only V2 Hook handlers exactly recorded by a
+  recognized V2 manifest while preserving the manifest, legacy database,
+  project state, and unrelated user Hooks.
 
 ### Removed
 
@@ -36,7 +46,8 @@ public release.
 ### Breaking Changes
 
 - Standard releases are source-only and no longer ship native executable assets.
-- Native provider wrappers are removed; an external model adapter must be supplied.
+- Native provider wrappers are removed; the bundled Codex CLI adapter is the
+  default, and `ModelCommandJson` is now an optional external override.
 - Legacy data migration to v3 behavior is read-only preview then explicit apply, and
   the original `.context-compactor/context.db` is never modified.
 
@@ -44,6 +55,8 @@ public release.
 
 - Run read-only migration preview before apply for existing
   `.context-compactor/context.db`; do not modify or delete the original DB.
+- Re-run install or update to replace only manifest-owned V2 Hook handlers with
+  the V3 project Hook definitions.
 - `state.yaml` no longer stores raw prompt/transcript/log text.
 - `events.sqlite` stores masked prompt text only, limited to 8,000 Unicode chars,
   and clears prompt text immediately on success with additional scrubbing within
@@ -51,17 +64,22 @@ public release.
 
 ### Verification
 
-- Formal combined-standard evidence:
+- Formal combined-standard observed input-token evidence:
   - 30-turn release runs on seeds 17/29/43 (signed-in Codex CLI `gpt-5.6-sol/high`)
     reduced tokens by 68.66%, 68.65%, 68.66%.
   - 60-turn endurance runs on seeds 17/29/43 reduced tokens by 81.97%, 81.97%, 82.15%.
   - Correctness, privacy, state-budget, and failed-candidate-corruption gates passed.
 - Windows CI now covers Python 3.9/3.13 syntax and tests plus PowerShell syntax
   checks.
+- The final local suite ran 77 tests successfully with 2 environment-dependent
+  skips, including bundled-adapter, repeated-SessionStart, management, migration,
+  privacy, and fresh-project E2E coverage.
 
 ### Known Issues
 
 - Formal benchmark reruns require signed-in Codex CLI calls.
+- The default bundled adapter requires a signed-in Codex CLI and access to its
+  configured model; an explicit external adapter remains available.
 - Secret masking covers the defined API-key/Bearer/token/password/private-key
   patterns; unknown formats are not guaranteed to be detected.
 

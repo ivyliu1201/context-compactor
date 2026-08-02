@@ -32,13 +32,21 @@ seven days. Non-prompt event/job metadata may remain. The journal is capped at
 
 ## Model boundary
 
-An external model adapter receives JSON in the `context-compactor/model/v1`
-shape containing the `redacted_prompt` and previous derived state. No provider
-adapter is bundled.
+By default, the bundled adapter invokes the signed-in Codex CLI with ephemeral,
+read-only execution. It sends the bounded `redacted_prompt` and previous derived
+state needed for the `context-compactor/model/v1` decision. User configuration
+and repository rules are ignored; the model is instructed not to call tools and
+runs in an isolated temporary workspace with a read-only sandbox.
 
-The user’s configured command controls network use and provider selection. If the
-command sends data remotely, the provider’s own policy applies; this project makes
-no retention claims about those providers.
+Before launch, the bundled adapter removes environment variables whose names
+contain the defined API-key, access/auth-token, Bearer, client-secret,
+credential, password, or private-key fragments. Saved Codex CLI authentication
+remains available so the CLI can use the account the user has already signed in
+with.
+
+`ModelCommandJson` may explicitly select an external adapter instead. Whether
+the bundled Codex CLI or an external command sends data remotely, the provider’s
+own policy applies; this project makes no provider-side retention claim.
 
 ## Durable output policy
 

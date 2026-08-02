@@ -12,32 +12,44 @@
 - Readable state file: `.context-compactor/state.yaml`.
 - Backup state file: `.context-compactor/state.backup.yaml`.
 - Lightweight journal: `.context-compactor/events.sqlite`.
+- Codex `SessionStart` injection matches `startup` only and never enqueues work
+  or launches the model worker.
 
 ## Windows source installer
 
-- Uses `scripts/install.ps1` (PowerShell 5.1+, Windows only).
-- Source is copied into a private venv under `%LOCALAPPDATA%\context-compactor` by default.
+- Requires PowerShell 5.1+, Git, and Python 3.9+ (Windows only). The default
+  bundled adapter additionally requires a signed-in Codex CLI.
+- Versioned source and a private venv are installed under
+  `%LOCALAPPDATA%\context-compactor` by default.
 - Supports `install`, `update`, `status`, `doctor`, and `uninstall`.
 - Supports `AgentHost` values `codex`, `claude`, and `all`.
-- `install` and `update` require `-ModelCommandJson`.
+- Omitting `-ModelCommandJson` uses the bundled Codex CLI adapter; the option
+  remains available as an explicit external-adapter override.
+- Install/update removes only V2 Hook handlers exactly recorded by a recognized
+  V2 manifest. It preserves the manifest, legacy `context.db`, project state,
+  and unrelated user Hooks.
+
+Run these commands from a cloned or extracted source tree:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 `
-  -Action install -ProjectRoot . -AgentHost all `
-  -ModelCommandJson '["python","C:\\path\\to\\model-adapter.py"]'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action install -ProjectRoot . -AgentHost codex
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 `
-  -Action update -ProjectRoot . -AgentHost all `
-  -ModelCommandJson '["python","C:\\path\\to\\model-adapter.py"]'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action update -ProjectRoot . -AgentHost codex
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action status -ProjectRoot . -AgentHost all
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action status -ProjectRoot . -AgentHost codex
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action doctor -ProjectRoot . -AgentHost all
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action doctor -ProjectRoot . -AgentHost codex
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action uninstall -ProjectRoot . -AgentHost all
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action uninstall -ProjectRoot . -AgentHost codex
 ```
 
-No bundled provider adapter is included. Use an external adapter that implements `context-compactor/model/v1`:
+To use an external adapter instead, add an override such as:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action install -ProjectRoot . -AgentHost codex -ModelCommandJson '["python","C:\\path\\to\\model-adapter.py"]'
+```
+
+The external adapter must implement `context-compactor/model/v1`:
 
 - Read one JSON request from stdin.
 - Write exactly one JSON response to stdout:
@@ -65,7 +77,7 @@ The migration reads legacy `.context-compactor/context.db` and never modifies or
 ## Verification
 
 - `python -B -m unittest discover -s tests`
-- Evidence: 68 tests ran successfully, including 2 opt-in skips.
+- Evidence: 77 tests ran successfully, including 2 environment-dependent skips.
 - Benchmarks: [docs/benchmark-report-v3-2026-07-31.zh-TW.md](docs/benchmark-report-v3-2026-07-31.zh-TW.md)
 - Live signed-in Codex CLI runs with `gpt-5.6-sol` and `high` reasoning effort.
 
@@ -81,7 +93,12 @@ python -B scripts/benchmark_v3.py --stage endurance `
 ```
 
 - Release stage (30 turns): pass, seeds `17,29,43`; turn-30 reductions `68.66%`, `68.65%`, `68.66%`; overall median `58.42%`; worst hook/background `17.021ms/20.838ms`.
-- Endurance stage (60 turns): pass, same seeds; turn-60 reductions `81.97%`, `81.97%`, `82.15%`; overall median `79.83%`; worst hook/background `24.460ms/30.280ms`.
+- Endurance stage (60 turns): pass, same seeds; turn-60 reductions
+  `81.97%`, `81.97%`, `82.15%`; cumulative reductions across checkpoints
+  45 and 60 were `79.83%`–`79.91%`; worst hook/background
+  `24.460ms/30.280ms`.
+- These are observed input-token reductions in the deterministic benchmark
+  scenario, not a guarantee of every live turn or billed-cost savings.
 - Gates passed: correctness, privacy, state-budget, failed-candidate-corruption.
 
 ## License
