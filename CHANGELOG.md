@@ -7,6 +7,35 @@ public release.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-08-02
+
+### Added
+
+- Added `scripts/bootstrap.ps1`, a Windows one-command entry point that
+  downloads the latest public stable GitHub Release and runs the source
+  installer for the current project.
+- Added PowerShell coverage that executes the documented remote-script command
+  twice, proving first install and repeat update behavior with the same command.
+
+### Changed
+
+- Documented `install` as the idempotent action used by the bootstrap for both
+  initial installation and later updates; the strict `update` action still
+  requires an existing installation.
+- Documented `codex.cmd` as the PowerShell-safe launcher when the npm
+  `codex.ps1` wrapper is blocked by local execution policy.
+- Pinned the documented bootstrap entry point to the `v3.1.0` release tag;
+  the pinned bootstrap continues to select the latest public stable release.
+
+### Verification
+
+- The bootstrap PowerShell parser check passed.
+- An isolated archive-backed PowerShell test passed the same documented
+  command twice and removed its temporary downloads.
+- A live GitHub `releases/latest` run downloaded public v3.0.0 source, installed
+  it into a clean isolated project, repeated the same bootstrap successfully,
+  selected the bundled Codex adapter, and removed the bootstrap temporary files.
+
 ## [3.0.0] - 2026-08-02
 
 ### Added

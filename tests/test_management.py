@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -264,6 +265,199 @@ class ManagementTests(unittest.TestCase):
             )
             self.assertEqual(removed.returncode, 0, removed.stderr)
             self.assertFalse(installation.exists())
+
+    @unittest.skipUnless(
+        os.name == "nt"
+        and shutil.which("powershell.exe") is not None
+        and shutil.which("git") is not None,
+        "Windows PowerShell and Git are required",
+    )
+    def test_powershell_bootstrap_installs_then_updates_same_command(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            archive_root = temporary / "archive"
+            release_root = archive_root / "ivyliu1201-context-compactor-test"
+            package_root = release_root / "context_compactor"
+            source_package = SOURCE_ROOT / "context_compactor"
+            for source in source_package.rglob("*.py"):
+                destination = package_root / source.relative_to(source_package)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+            scripts_root = release_root / "scripts"
+            scripts_root.mkdir(parents=True)
+            for name in ("install.ps1", "context-compactor-hook.ps1"):
+                shutil.copyfile(
+                    SOURCE_ROOT / "scripts" / name,
+                    scripts_root / name,
+                )
+            shutil.copyfile(
+                SOURCE_ROOT / "requirements.lock",
+                release_root / "requirements.lock",
+            )
+
+            archive = temporary / "release.zip"
+            with zipfile.ZipFile(
+                archive,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+            ) as bundle:
+                for path in release_root.rglob("*"):
+                    if path.is_file():
+                        bundle.write(path, path.relative_to(archive_root))
+
+            project = temporary / "fresh project"
+            project.mkdir()
+            tools = temporary / "tools"
+            tools.mkdir()
+            profile = temporary / "profile"
+            profile.mkdir()
+            bootstrap_temp = temporary / "bootstrap temp"
+            bootstrap_temp.mkdir()
+            (tools / "codex.cmd").write_text(
+                "@exit /b 0\r\n",
+                encoding="ascii",
+            )
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": str(tools)
+                    + os.pathsep
+                    + environment.get("PATH", ""),
+                    "CC_ARCHIVE": str(archive),
+                    "CC_BOOTSTRAP": str(
+                        SOURCE_ROOT / "scripts" / "bootstrap.ps1"
+                    ),
+                    "LOCALAPPDATA": str(temporary / "Local App Data"),
+                    "HOME": str(profile),
+                    "USERPROFILE": str(profile),
+                    "TEMP": str(bootstrap_temp),
+                    "TMP": str(bootstrap_temp),
+                }
+            )
+            powershell = str(shutil.which("powershell.exe"))
+            command = """
+function Invoke-RestMethod {
+    [CmdletBinding()]
+    param([string]$Uri, $Headers, [string]$Method)
+    if ($Uri -eq 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.1.0/scripts/bootstrap.ps1') {
+        return Get-Content -Raw -Encoding UTF8 $env:CC_BOOTSTRAP
+    }
+    if ($Uri -ne 'https://api.github.com/repos/ivyliu1201/context-compactor/releases/latest') {
+        throw 'unexpected release API URL'
+    }
+    [pscustomobject]@{
+        tag_name = 'v3.1.0'
+        zipball_url = 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/v3.1.0'
+        draft = $false
+        prerelease = $false
+    }
+}
+function Invoke-WebRequest {
+    [CmdletBinding()]
+    param(
+        [string]$Uri,
+        $Headers,
+        [switch]$UseBasicParsing,
+        [string]$OutFile
+    )
+    if ($Uri -ne 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/v3.1.0') {
+        throw 'unexpected release download URL'
+    }
+    Copy-Item -LiteralPath $env:CC_ARCHIVE -Destination $OutFile
+}
+& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.1.0/scripts/bootstrap.ps1')))
+"""
+
+            def run_bootstrap() -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    (
+                        powershell,
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command",
+                        command,
+                    ),
+                    capture_output=True,
+                    check=False,
+                    cwd=project,
+                    env=environment,
+                    text=True,
+                    timeout=180,
+                )
+
+            first = run_bootstrap()
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_report = json.loads(first.stdout)
+            self.assertTrue(first_report["installed"])
+            self.assertTrue(first_report["source_created"])
+            self.assertTrue(first_report["source_changed"])
+            self.assertEqual(Path(first_report["project_root"]), project.resolve())
+
+            second = run_bootstrap()
+            self.assertEqual(second.returncode, 0, second.stderr)
+            second_report = json.loads(second.stdout)
+            self.assertTrue(second_report["installed"])
+            self.assertFalse(second_report["source_created"])
+            self.assertFalse(second_report["source_changed"])
+            self.assertEqual(second_report["command"], "install")
+            self.assertFalse(
+                any(bootstrap_temp.glob("context-compactor-bootstrap-*"))
+            )
+
+    @unittest.skipUnless(
+        os.name == "nt" and shutil.which("powershell.exe") is not None,
+        "Windows PowerShell is required",
+    )
+    def test_powershell_bootstrap_rejects_unexpected_download_host(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            project = temporary / "project"
+            project.mkdir()
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "CC_BOOTSTRAP": str(
+                        SOURCE_ROOT / "scripts" / "bootstrap.ps1"
+                    ),
+                    "CC_PROJECT_ROOT": str(project),
+                }
+            )
+            command = """
+function Invoke-RestMethod {
+    [CmdletBinding()]
+    param([string]$Uri, $Headers, [string]$Method)
+    [pscustomobject]@{
+        tag_name = 'v3.0.0'
+        zipball_url = 'https://example.test/context-compactor.zip'
+        draft = $false
+        prerelease = $false
+    }
+}
+& $env:CC_BOOTSTRAP -ProjectRoot $env:CC_PROJECT_ROOT
+"""
+            rejected = subprocess.run(
+                (
+                    str(shutil.which("powershell.exe")),
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    command,
+                ),
+                capture_output=True,
+                check=False,
+                cwd=project,
+                env=environment,
+                text=True,
+                timeout=60,
+            )
+
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("outside the expected repository", rejected.stderr)
 
     def test_source_install_repeated_update_and_uninstall_preserve_user_hooks(
         self,

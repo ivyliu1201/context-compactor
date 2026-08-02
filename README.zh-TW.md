@@ -14,20 +14,31 @@
 - 輕量 journal 為 `.context-compactor/events.sqlite`。
 - Codex `SessionStart` 只匹配 `startup`，且不會建立工作或啟動模型 worker。
 
-## Windows source installer
+## Windows 一鍵安裝或更新
 
-- 需要 PowerShell 5.1+、Git 與 Python 3.9+（僅限 Windows）；預設內建
-  adapter 另外需要已登入的 Codex CLI。
-- 預設將版本化來源與私有 venv 安裝到
-  `%LOCALAPPDATA%\context-compactor`。
-- 支援 `install`、`update`、`status`、`doctor`、`uninstall`。
-- 支援 `AgentHost`：`codex`、`claude`、`all`。
-- 省略 `-ModelCommandJson` 時會使用內建 Codex CLI adapter；此參數仍可用來
-  明確指定外部 adapter。
-- install/update 只移除可辨識 V2 manifest 精確記錄的 V2 Hook handler，並保留
-  manifest、舊 `context.db`、專案狀態與無關的使用者 Hook。
+請先在要啟用 Hook 的 coding project 根目錄開啟 PowerShell。環境需要
+Windows PowerShell 5.1+、Git、Python 3.9+，以及已登入的 Codex CLI。
+第一次安裝與之後更新都執行同一條指令：
 
-請在 clone 或解壓縮後的 source tree 根目錄執行：
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.1.0/scripts/bootstrap.ps1')))"
+```
+
+這條指令會先從 `v3.1.0` release tag 載入固定版本的 bootstrap。bootstrap
+再從本 repository 取得最新的公開穩定 Release，並檢查下載網址、release tag
+與來源版本，再執行可重複呼叫的 source installer；完成後會清除暫存下載檔。
+版本化來源與私有 venv 預設安裝到
+`%LOCALAPPDATA%\context-compactor`。
+
+看到回傳 JSON 包含 `"ok": true` 後，請在同一個專案目錄啟動 Codex。
+若 PowerShell 阻擋 npm 的 `codex.ps1`，請改輸入 `codex.cmd`。Codex 若詢問
+是否信任 project Hook，請確認信任。受管理的 `SessionStart` Hook 只會在
+`startup` 執行；一般 prompt 由背景 memory worker 處理。
+
+### Source tree 管理指令
+
+若已 clone 或解壓縮 source tree，仍可直接使用原管理腳本。`install` 可安全
+重複執行；較嚴格的 `update` 必須先有既存 source installation 與已安裝專案。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action install -ProjectRoot . -AgentHost codex
@@ -40,6 +51,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -A
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action uninstall -ProjectRoot . -AgentHost codex
 ```
+
+source installer 支援 `AgentHost`：`codex`、`claude`、`all`。
+install/update 只移除可辨識 V2 manifest 精確記錄的 V2 Hook handler，並保留
+manifest、舊 `context.db`、專案狀態與無關的使用者 Hook。
 
 若要改用外部 adapter，可加入以下 override：
 
@@ -75,7 +90,7 @@ python -m context_compactor migrate apply --project-root .
 ## 驗證
 
 - `python -B -m unittest discover -s tests`
-- 驗證結果：77 測試成功執行，含 2 個依環境條件 skip 的測試。
+- 驗證結果：79 測試成功執行，含 2 個依環境條件 skip 的測試。
 - 基準報告：[docs/benchmark-report-v3-2026-07-31.zh-TW.md](docs/benchmark-report-v3-2026-07-31.zh-TW.md)
 - 使用已登入的 Codex CLI 實際執行，模型為 `gpt-5.6-sol` 且 reasoning effort 為 `high`。
 

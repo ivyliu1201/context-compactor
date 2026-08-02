@@ -15,21 +15,35 @@
 - Codex `SessionStart` injection matches `startup` only and never enqueues work
   or launches the model worker.
 
-## Windows source installer
+## Windows one-command install or update
 
-- Requires PowerShell 5.1+, Git, and Python 3.9+ (Windows only). The default
-  bundled adapter additionally requires a signed-in Codex CLI.
-- Versioned source and a private venv are installed under
-  `%LOCALAPPDATA%\context-compactor` by default.
-- Supports `install`, `update`, `status`, `doctor`, and `uninstall`.
-- Supports `AgentHost` values `codex`, `claude`, and `all`.
-- Omitting `-ModelCommandJson` uses the bundled Codex CLI adapter; the option
-  remains available as an explicit external-adapter override.
-- Install/update removes only V2 Hook handlers exactly recorded by a recognized
-  V2 manifest. It preserves the manifest, legacy `context.db`, project state,
-  and unrelated user Hooks.
+Open PowerShell in the root of the coding project where the Hook should run.
+Windows PowerShell 5.1+, Git, Python 3.9+, and a signed-in Codex CLI are
+required. Run this same command for both the first installation and every
+later update:
 
-Run these commands from a cloned or extracted source tree:
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.1.0/scripts/bootstrap.ps1')))"
+```
+
+The command loads a version-pinned bootstrap from the `v3.1.0` release tag.
+That bootstrap downloads the latest public stable release from this repository,
+checks the repository download URL, release tag, and source version, then runs
+the idempotent source installer. Temporary download files are removed when it
+finishes. Versioned source and a private venv are installed under
+`%LOCALAPPDATA%\context-compactor` by default.
+
+After the command returns JSON with `"ok": true`, start Codex from that same
+project directory. If PowerShell blocks the npm `codex.ps1` wrapper, use
+`codex.cmd`. Approve the project Hook if Codex asks for trust. The managed
+`SessionStart` Hook runs only for `startup`; normal prompts are handled by
+the background memory worker.
+
+### Source-tree management
+
+The source installer remains available after cloning or extracting the source
+tree. `install` is safe to repeat; the stricter `update` action requires an
+existing source installation and installed project.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action install -ProjectRoot . -AgentHost codex
@@ -42,6 +56,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -A
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action uninstall -ProjectRoot . -AgentHost codex
 ```
+
+The source installer supports `AgentHost` values `codex`, `claude`, and
+`all`. Install/update removes only V2 Hook handlers exactly recorded by a
+recognized V2 manifest. It preserves the manifest, legacy `context.db`,
+project state, and unrelated user Hooks.
 
 To use an external adapter instead, add an override such as:
 
@@ -77,7 +96,7 @@ The migration reads legacy `.context-compactor/context.db` and never modifies or
 ## Verification
 
 - `python -B -m unittest discover -s tests`
-- Evidence: 77 tests ran successfully, including 2 environment-dependent skips.
+- Evidence: 79 tests ran successfully, including 2 environment-dependent skips.
 - Benchmarks: [docs/benchmark-report-v3-2026-07-31.zh-TW.md](docs/benchmark-report-v3-2026-07-31.zh-TW.md)
 - Live signed-in Codex CLI runs with `gpt-5.6-sol` and `high` reasoning effort.
 
