@@ -16,27 +16,10 @@ from .host import (
     diagnostic_line,
     handle_hook,
 )
-from .journal import Journal
-from .launcher import launch_worker
-from .management import (
-    HOST_CLAUDE as MANAGED_HOST_CLAUDE,
-    HOST_CODEX as MANAGED_HOST_CODEX,
-    ManagementError,
-    doctor,
-    install_source,
-    status,
-    uninstall,
-    update_source,
-)
-from .migration import (
-    MigrationError,
-    apply_legacy_migration,
-    preview_legacy_migration,
-)
-from .model import CommandModel
-from .paths import ProjectPathError, project_paths, resolve_project_root
-from .state import ProjectState, load_state, load_state_file, publish_state
-from .worker import MemoryWorker
+from .paths import ProjectPathError, resolve_project_root
+
+MANAGED_HOST_CODEX = "codex"
+MANAGED_HOST_CLAUDE = "claude"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -93,7 +76,6 @@ def _parser() -> argparse.ArgumentParser:
         management.add_argument(
             "--model-command",
             nargs=argparse.REMAINDER,
-            required=True,
         )
 
     for name in ("uninstall", "status", "doctor"):
@@ -115,6 +97,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.command == "state":
+        from .paths import project_paths
+        from .state import ProjectState, load_state, load_state_file, publish_state
+
         project_root = resolve_project_root(args.project_root)
         if args.state_command == "init":
             paths = project_paths(project_root)
@@ -130,6 +115,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
 
     if args.command == "migrate":
+        from .migration import (
+            MigrationError,
+            apply_legacy_migration,
+            preview_legacy_migration,
+        )
+
         try:
             project_root = resolve_project_root(args.project_root)
             if args.migration_command == "preview":
@@ -149,6 +140,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.command == "worker" and args.worker_command == "run":
+        from .journal import Journal
+        from .model import CommandModel
+        from .worker import MemoryWorker
+
         project_root = resolve_project_root(args.project_root)
         model = CommandModel(
             args.model_command,
@@ -166,6 +161,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.command == "worker" and args.worker_command == "spawn":
+        from .launcher import launch_worker
+
         result = launch_worker(
             args.project_root,
             args.model_command,
@@ -194,6 +191,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.command in {"install", "update", "uninstall", "status", "doctor"}:
+        from .management import (
+            ManagementError,
+            doctor,
+            install_source,
+            status,
+            uninstall,
+            update_source,
+        )
+
         try:
             common = {
                 "project_root": resolve_project_root(args.project_root),
@@ -206,6 +212,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     source_root=args.source_root,
                     python=args.python,
                     model_command=args.model_command,
+                    include_user_legacy=True,
                 )
             elif args.command == "update":
                 report = update_source(
@@ -213,6 +220,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     source_root=args.source_root,
                     python=args.python,
                     model_command=args.model_command,
+                    include_user_legacy=True,
                 )
             elif args.command == "uninstall":
                 report = uninstall(**common)

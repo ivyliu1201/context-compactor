@@ -97,6 +97,8 @@ class ManagementTests(unittest.TestCase):
             installation = temporary / "Local App Data" / "context-compactor"
             tools = temporary / "tools"
             tools.mkdir()
+            profile = temporary / "profile"
+            profile.mkdir()
             (tools / "codex.cmd").write_text("@exit /b 0\r\n", encoding="ascii")
 
             environment = os.environ.copy()
@@ -111,6 +113,8 @@ class ManagementTests(unittest.TestCase):
                     "CC_PROJECT_ROOT": str(project),
                     "CC_INSTALL_ROOT": str(installation),
                     "CC_PYTHON": sys.executable,
+                    "HOME": str(profile),
+                    "USERPROFILE": str(profile),
                     "CC_MODEL_COMMAND": json.dumps(
                         [sys.executable, "-c", "pass"]
                     ),
@@ -163,6 +167,102 @@ class ManagementTests(unittest.TestCase):
             )
             self.assertEqual(removed.returncode, 0, removed.stderr)
             self.assertTrue(json.loads(removed.stdout)["installation_removed"])
+            self.assertFalse(installation.exists())
+
+    @unittest.skipUnless(
+        os.name == "nt"
+        and shutil.which("powershell.exe") is not None
+        and shutil.which("git") is not None,
+        "Windows PowerShell and Git are required",
+    )
+    def test_powershell_installer_uses_bundled_adapter_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            project = temporary / "fresh project"
+            project.mkdir()
+            installation = temporary / "Local App Data" / "context-compactor"
+            tools = temporary / "tools"
+            tools.mkdir()
+            profile = temporary / "profile"
+            profile.mkdir()
+            codex = tools / "codex.cmd"
+            codex.write_text("@exit /b 0\r\n", encoding="ascii")
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": str(tools)
+                    + os.pathsep
+                    + environment.get("PATH", ""),
+                    "CC_INSTALL_SCRIPT": str(
+                        SOURCE_ROOT / "scripts" / "install.ps1"
+                    ),
+                    "CC_PROJECT_ROOT": str(project),
+                    "CC_INSTALL_ROOT": str(installation),
+                    "CC_PYTHON": sys.executable,
+                    "HOME": str(profile),
+                    "USERPROFILE": str(profile),
+                }
+            )
+            powershell = str(shutil.which("powershell.exe"))
+            installed = subprocess.run(
+                (
+                    powershell,
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "& $env:CC_INSTALL_SCRIPT -Action install "
+                    "-ProjectRoot $env:CC_PROJECT_ROOT "
+                    "-InstallDirectory $env:CC_INSTALL_ROOT "
+                    "-AgentHost codex -Python $env:CC_PYTHON",
+                ),
+                capture_output=True,
+                check=False,
+                cwd=SOURCE_ROOT,
+                env=environment,
+                text=True,
+                timeout=180,
+            )
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            report = json.loads(installed.stdout)
+            self.assertEqual(report["model_adapter"], "bundled_codex")
+
+            install_manifest = json.loads(
+                (installation / "install.json").read_text(encoding="utf-8")
+            )
+            project_manifest = json.loads(
+                Path(next(iter(install_manifest["projects"].values()))).read_text(
+                    encoding="utf-8"
+                )
+            )
+            command = project_manifest["model_command"]
+            self.assertEqual(
+                command[1:3],
+                ["-m", "context_compactor.codex_adapter"],
+            )
+            self.assertEqual(Path(command[4]), codex.resolve())
+
+            removed = subprocess.run(
+                (
+                    powershell,
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "& $env:CC_INSTALL_SCRIPT -Action uninstall "
+                    "-ProjectRoot $env:CC_PROJECT_ROOT "
+                    "-InstallDirectory $env:CC_INSTALL_ROOT "
+                    "-AgentHost codex -Python $env:CC_PYTHON",
+                ),
+                capture_output=True,
+                check=False,
+                cwd=SOURCE_ROOT,
+                env=environment,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(removed.returncode, 0, removed.stderr)
             self.assertFalse(installation.exists())
 
     def test_source_install_repeated_update_and_uninstall_preserve_user_hooks(
@@ -250,6 +350,19 @@ class ManagementTests(unittest.TestCase):
                 self.assertEqual(updated["hooks"][0]["events"][event], 1)
 
             document = json.loads(config_path.read_text(encoding="utf-8"))
+            managed_session_groups = [
+                group
+                for group in document["hooks"]["SessionStart"]
+                if any(
+                    handler.get("command") != "user-owned-hook"
+                    for handler in group["hooks"]
+                )
+            ]
+            self.assertEqual(len(managed_session_groups), 1)
+            self.assertEqual(
+                managed_session_groups[0].get("matcher"),
+                "^startup$",
+            )
             session_handlers = [
                 handler
                 for group in document["hooks"]["SessionStart"]
@@ -262,6 +375,22 @@ class ManagementTests(unittest.TestCase):
                 ),
                 1,
             )
+
+            managed_session_groups[0]["matcher"] = ".*"
+            config_path.write_text(json.dumps(document), encoding="utf-8")
+            unhealthy = status(
+                project_root=project,
+                install_root=installation,
+                hosts=("codex",),
+                now=NOW,
+                which=which,
+            )
+            self.assertIn(
+                "hook_definition_mismatch",
+                unhealthy["hooks"][0]["issues"],
+            )
+            managed_session_groups[0]["matcher"] = "^startup$"
+            config_path.write_text(json.dumps(document), encoding="utf-8")
 
             install_manifest = json.loads(
                 (installation / "install.json").read_text(encoding="utf-8")
@@ -323,6 +452,229 @@ class ManagementTests(unittest.TestCase):
                 json.loads(config_path.read_text(encoding="utf-8")),
                 original,
             )
+
+    def test_source_install_defaults_to_bundled_codex_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            project = temporary / "project"
+            project.mkdir()
+            installation = temporary / "install"
+            tools = temporary / "tools"
+            tools.mkdir()
+            which = _which(tools, "codex")
+
+            with patch(
+                "context_compactor.management._prepare_private_venv",
+                side_effect=_fake_private_venv,
+            ):
+                installed = install_source(
+                    project_root=project,
+                    source_root=SOURCE_ROOT,
+                    install_root=installation,
+                    python=sys.executable,
+                    hosts=("codex",),
+                    now=NOW,
+                    which=which,
+                )
+
+            self.assertEqual(installed["model_adapter"], "bundled_codex")
+            install_manifest = json.loads(
+                (installation / "install.json").read_text(encoding="utf-8")
+            )
+            project_manifest_path = Path(
+                next(iter(install_manifest["projects"].values()))
+            )
+            project_manifest = json.loads(
+                project_manifest_path.read_text(encoding="utf-8")
+            )
+            command = project_manifest["model_command"]
+            self.assertEqual(command[0], installed["python_interpreter"])
+            self.assertEqual(
+                command[1:3],
+                ["-m", "context_compactor.codex_adapter"],
+            )
+            self.assertEqual(command[3], "--codex-command")
+            self.assertEqual(Path(command[4]), (tools / "codex").resolve())
+
+            healthy = status(
+                project_root=project,
+                install_root=installation,
+                hosts=("codex",),
+                now=NOW,
+                which=which,
+            )
+            self.assertEqual(healthy["model_adapter"], "bundled_codex")
+            self.assertTrue(healthy["hooks"][0]["model_available"])
+
+            (tools / "codex").unlink()
+            missing = status(
+                project_root=project,
+                install_root=installation,
+                hosts=("codex",),
+                now=NOW,
+                which=which,
+            )
+            self.assertFalse(missing["hooks"][0]["model_available"])
+
+    def test_install_removes_only_manifest_owned_v2_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            project = temporary / "project"
+            project.mkdir()
+            legacy_home = temporary / "legacy-home"
+            legacy_state = legacy_home / ".context-compactor"
+            legacy_state.mkdir(parents=True)
+            installation = temporary / "install"
+            tools = temporary / "tools"
+            tools.mkdir()
+            which = _which(tools, "codex")
+
+            legacy_command = '"C:\\legacy\\context-compactor.exe" hook'
+            legacy_command_windows = f"& {legacy_command}"
+            legacy_manifest = {
+                "version": 1,
+                "hosts": {
+                    "codex": {
+                        "executable": "C:\\legacy\\context-compactor.exe",
+                        "command": legacy_command,
+                        "command_windows": legacy_command_windows,
+                        "config_created": False,
+                        "installed_at": "2026-07-30T00:00:00Z",
+                    }
+                },
+            }
+            manifest_path = legacy_state / "install.json"
+            manifest_path.write_text(
+                json.dumps(legacy_manifest),
+                encoding="utf-8",
+            )
+            manifest_before = manifest_path.read_bytes()
+            legacy_database = legacy_state / "context.db"
+            legacy_database.write_bytes(b"legacy-database-must-remain")
+            database_before = legacy_database.read_bytes()
+
+            legacy_config_path = legacy_home / ".codex" / "hooks.json"
+            legacy_config_path.parent.mkdir()
+            legacy_hooks = {
+                event: [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": legacy_command,
+                                "commandWindows": legacy_command_windows,
+                                "timeout": 30,
+                            }
+                        ]
+                    }
+                ]
+                for event in HOOK_EVENTS
+            }
+            legacy_hooks["SessionStart"].append(
+                {
+                    "matcher": "^startup$",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "user-owned-hook",
+                            "timeout": 10,
+                        }
+                    ],
+                }
+            )
+            legacy_config_path.write_text(
+                json.dumps({"custom": True, "hooks": legacy_hooks}),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "context_compactor.management._legacy_install_roots",
+                return_value=(project, legacy_home),
+            ), patch(
+                "context_compactor.management._prepare_private_venv",
+                side_effect=_fake_private_venv,
+            ):
+                report = install_source(
+                    project_root=project,
+                    source_root=SOURCE_ROOT,
+                    install_root=installation,
+                    python=sys.executable,
+                    hosts=("codex",),
+                    model_command=(sys.executable, "-c", "pass"),
+                    now=NOW,
+                    which=which,
+                )
+
+            self.assertEqual(report["legacy_hooks_removed"], len(HOOK_EVENTS))
+            cleaned = json.loads(
+                legacy_config_path.read_text(encoding="utf-8")
+            )
+            self.assertTrue(cleaned["custom"])
+            for event in HOOK_EVENTS:
+                handlers = [
+                    handler
+                    for group in cleaned["hooks"].get(event, [])
+                    for handler in group["hooks"]
+                ]
+                self.assertFalse(
+                    any(
+                        handler.get("command") == legacy_command
+                        for handler in handlers
+                    )
+                )
+            self.assertEqual(
+                cleaned["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+                "user-owned-hook",
+            )
+            self.assertEqual(manifest_path.read_bytes(), manifest_before)
+            self.assertEqual(legacy_database.read_bytes(), database_before)
+
+            installed_config = json.loads(
+                (project / ".codex" / "hooks.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                installed_config["hooks"]["SessionStart"][0]["matcher"],
+                "^startup$",
+            )
+
+    def test_status_keeps_explicit_adapter_override_external(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            project = temporary / "project"
+            project.mkdir()
+            installation = temporary / "install"
+            tools = temporary / "tools"
+            tools.mkdir()
+            which = _which(tools, "codex")
+
+            with patch(
+                "context_compactor.management._prepare_private_venv",
+                side_effect=_fake_private_venv,
+            ):
+                installed = install_source(
+                    project_root=project,
+                    source_root=SOURCE_ROOT,
+                    install_root=installation,
+                    python=sys.executable,
+                    hosts=("codex",),
+                    model_command=(
+                        sys.executable,
+                        "-m",
+                        "context_compactor.codex_adapter",
+                    ),
+                    now=NOW,
+                    which=which,
+                )
+
+            self.assertEqual(installed["model_adapter"], "external")
+            report = status(
+                project_root=project,
+                install_root=installation,
+                hosts=("codex",),
+                now=NOW,
+                which=which,
+            )
+            self.assertTrue(report["hooks"][0]["model_available"])
 
     def test_status_is_read_only_and_doctor_reports_runtime_health(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

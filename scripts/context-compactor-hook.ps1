@@ -14,7 +14,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 try {
-    $manifestPath = (Resolve-Path -LiteralPath $Manifest).Path
+    $manifestPath = [IO.Path]::GetFullPath($Manifest)
+    if (-not [IO.File]::Exists($manifestPath)) {
+        throw "The project manifest is unavailable."
+    }
     $document = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
     if ($document.schema_version -ne 1) {
         throw "The project manifest version is unsupported."
@@ -25,12 +28,12 @@ try {
     }
 
     $python = [string]$document.python_interpreter
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+    if (-not [IO.File]::Exists($python)) {
         throw "The installed Python interpreter is unavailable."
     }
 
     $projectRoot = [string]$document.project_root
-    if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) {
+    if (-not [IO.Directory]::Exists($projectRoot)) {
         throw "The configured project root is unavailable."
     }
 

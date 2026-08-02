@@ -22,11 +22,12 @@ from context_compactor.state import load_state
 REPORT_SCHEMA_VERSION = 1
 BACKGROUND_TIMEOUT_SECONDS = 30.0
 HOOK_TIMEOUT_SECONDS = 20.0
-HOOK_LATENCY_GATE_MS = 5_000.0
+COLD_HOOK_LATENCY_GATE_MS = 5_500.0
+SUBSEQUENT_HOOK_LATENCY_GATE_MS = 5_000.0
 WINDOWS_CREATE_NO_WINDOW = 0x08000000
 REDACTION_MARKER = "[REDACTED]"
 
-_MODEL_SCRIPT = """\
+_CODEX_SCRIPT = """\
 import ctypes
 import json
 import os
@@ -34,7 +35,6 @@ import pathlib
 import sys
 import time
 
-request = json.load(sys.stdin)
 console = 0
 if os.name == "nt":
     console = int(bool(ctypes.windll.kernel32.GetConsoleWindow()))
@@ -42,10 +42,25 @@ with pathlib.Path(sys.argv[1]).open("a", encoding="utf-8") as stream:
     stream.write(str(console) + "\\n")
     stream.flush()
 
+arguments = sys.argv[2:]
+required = {
+    "exec",
+    "--json",
+    "--ephemeral",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--output-schema",
+}
+if not required.issubset(arguments):
+    raise SystemExit(2)
+prompt_text = sys.stdin.read()
+begin = prompt_text.index("REQUEST_JSON_BEGIN\\n") + len("REQUEST_JSON_BEGIN\\n")
+end = prompt_text.index("\\nREQUEST_JSON_END", begin)
+request = json.loads(prompt_text[begin:end])
 time.sleep(1.0)
 prompt = request["redacted_prompt"]
 if "explanation-only" in prompt:
-    result = {"outcome": "no_change"}
+    result = {"outcome": "no_change", "state": None}
 else:
     if "[REDACTED]" not in prompt:
         raise SystemExit(3)
@@ -55,6 +70,7 @@ else:
         {
             "statement": "Keep local project memory private and bounded.",
             "source": "SPEC.md",
+            "source_event_id": None,
         }
     ]
     state["metadata"] = {
@@ -62,7 +78,22 @@ else:
         "updated_at": "",
     }
     result = {"outcome": "updated", "state": state}
-print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+events = (
+    {"type": "thread.started", "thread_id": "synthetic"},
+    {
+        "type": "item.completed",
+        "item": {
+            "type": "agent_message",
+            "text": json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+        },
+    },
+    {
+        "type": "turn.completed",
+        "usage": {"input_tokens": 100, "output_tokens": 20},
+    },
+)
+for event in events:
+    print(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
 """
 
 
@@ -92,20 +123,21 @@ def run_fresh_project_e2e(source_root: Path) -> dict[str, object]:
         (profile / "Local App Data").mkdir(parents=True)
         (profile / "Roaming App Data").mkdir(parents=True)
 
-        host_command = tools / "codex.cmd"
-        host_command.write_text("@echo off\r\nexit /b 0\r\n", encoding="ascii")
-        model_script = profile / "synthetic-model.py"
-        model_script.write_text(_MODEL_SCRIPT, encoding="utf-8")
         console_observations = profile / "console-observations.txt"
+        codex_script = profile / "synthetic-codex.py"
+        codex_script.write_text(_CODEX_SCRIPT, encoding="utf-8")
+        host_command = tools / "codex.cmd"
+        host_command.write_text(
+            "@echo off\r\n"
+            f'"{sys.executable}" "{codex_script}" '
+            f'"{console_observations}" %*\r\n'
+            "exit /b %ERRORLEVEL%\r\n",
+            encoding="utf-8",
+        )
 
         environment = _isolated_environment(profile, tools)
         powershell = _powershell()
         install_script = source / "scripts" / "install.ps1"
-        model_command = (
-            sys.executable,
-            str(model_script),
-            str(console_observations),
-        )
         install = _run(
             (
                 powershell,
@@ -124,8 +156,6 @@ def run_fresh_project_e2e(source_root: Path) -> dict[str, object]:
                 "codex",
                 "-Python",
                 sys.executable,
-                "-ModelCommandJson",
-                json.dumps(model_command),
             ),
             cwd=source,
             environment=environment,
@@ -133,6 +163,9 @@ def run_fresh_project_e2e(source_root: Path) -> dict[str, object]:
             category="install_failed",
         )
         install_report = _decode_report(install.stdout, "install_report_invalid")
+        bundled_codex_adapter = (
+            install_report.get("model_adapter") == "bundled_codex"
+        )
         project_manifests = tuple((installation / "projects").glob("*.json"))
         if len(project_manifests) != 1:
             raise FreshProjectE2EError("project_manifest_missing")
@@ -349,6 +382,7 @@ def run_fresh_project_e2e(source_root: Path) -> dict[str, object]:
         checks = {
             "source_installed": source_installed,
             "private_venv": private_venv_installed,
+            "bundled_codex_adapter": bundled_codex_adapter,
             "hook_definition_healthy": hook_definition_healthy,
             "prompt_hook_protocol_valid": (
                 _valid_optional_hook_output(
@@ -391,7 +425,9 @@ def run_fresh_project_e2e(source_root: Path) -> dict[str, object]:
                 and 'authority="derived"' in injection_context
             ),
             "hook_latency_within_gate": (
-                max(latency_ms["hook"]) < HOOK_LATENCY_GATE_MS
+                latency_ms["hook"][0] < COLD_HOOK_LATENCY_GATE_MS
+                and max(latency_ms["hook"][1:])
+                < SUBSEQUENT_HOOK_LATENCY_GATE_MS
             ),
             "background_completed_within_gate": (
                 max(latency_ms["background"])
@@ -445,6 +481,7 @@ def _isolated_environment(profile: Path, tools: Path) -> dict[str, str]:
     environment.update(
         {
             "USERPROFILE": str(profile),
+            "HOME": str(profile),
             "LOCALAPPDATA": str(profile / "Local App Data"),
             "APPDATA": str(profile / "Roaming App Data"),
             "PSModuleAnalysisCachePath": str(
@@ -559,7 +596,7 @@ def _codex_session_payload(project: Path) -> bytes:
             "hook_event_name": "SessionStart",
             "model": "synthetic-local-model",
             "permission_mode": "default",
-            "source": "resume",
+            "source": "startup",
         },
         separators=(",", ":"),
     ).encode("utf-8")

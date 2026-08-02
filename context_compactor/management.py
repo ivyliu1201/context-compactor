@@ -21,6 +21,7 @@ from .privacy import PrivacyFilterError, contains_known_secret
 from .state import StateError, load_state_file
 
 MANIFEST_VERSION = 1
+LEGACY_MANIFEST_VERSION = 1
 HOST_CODEX = "codex"
 HOST_CLAUDE = "claude"
 SUPPORTED_HOSTS = (HOST_CODEX, HOST_CLAUDE)
@@ -78,7 +79,8 @@ def install_source(
     install_root: Optional[PathValue],
     python: str,
     hosts: Sequence[str],
-    model_command: Sequence[str],
+    model_command: Optional[Sequence[str]] = None,
+    include_user_legacy: bool = False,
     now: Optional[datetime] = None,
     which: _Which = shutil.which,
 ) -> dict[str, object]:
@@ -90,6 +92,7 @@ def install_source(
         python=python,
         hosts=hosts,
         model_command=model_command,
+        include_user_legacy=include_user_legacy,
         now=now,
         which=which,
     )
@@ -102,7 +105,8 @@ def update_source(
     install_root: Optional[PathValue],
     python: str,
     hosts: Sequence[str],
-    model_command: Sequence[str],
+    model_command: Optional[Sequence[str]] = None,
+    include_user_legacy: bool = False,
     now: Optional[datetime] = None,
     which: _Which = shutil.which,
 ) -> dict[str, object]:
@@ -114,6 +118,7 @@ def update_source(
         python=python,
         hosts=hosts,
         model_command=model_command,
+        include_user_legacy=include_user_legacy,
         now=now,
         which=which,
     )
@@ -307,7 +312,8 @@ def _install_or_update(
     install_root: Optional[PathValue],
     python: str,
     hosts: Sequence[str],
-    model_command: Sequence[str],
+    model_command: Optional[Sequence[str]],
+    include_user_legacy: bool,
     now: Optional[datetime],
     which: _Which,
 ) -> dict[str, object]:
@@ -319,7 +325,16 @@ def _install_or_update(
 
     source_files = _source_files(source)
     system_python = _validate_python(python, which)
-    resolved_model_command = _validate_model_command(model_command, which)
+    resolved_model_command = (
+        _validate_model_command(model_command, which)
+        if model_command is not None
+        else None
+    )
+    bundled_codex = (
+        _required_executable(("codex",), which)
+        if resolved_model_command is None
+        else None
+    )
     powershell = _required_executable(("powershell.exe", "powershell"), which)
     for host in selected:
         _required_executable((_HOST_EXECUTABLES[host],), which)
@@ -351,6 +366,31 @@ def _install_or_update(
             raise ManagementError("Claude hooks are disabled")
         hook_documents[host] = (config_path, document, config_existed)
 
+    legacy_hooks_removed = 0
+    legacy_changes: dict[Path, Optional[bytes]] = {}
+    for legacy_root, host, definition in _legacy_hook_installations(
+        root,
+        selected,
+        include_user_legacy,
+    ):
+        config_path = _host_config_path(legacy_root, host)
+        current_config_path, current_document, _ = hook_documents[host]
+        if config_path == current_config_path:
+            document = current_document
+        else:
+            document, _ = _load_hook_document(config_path)
+        removed = sum(_count_owned_hooks(document, definition).values())
+        if not removed:
+            continue
+        _remove_owned_hooks(document, definition)
+        legacy_hooks_removed += removed
+        if config_path != current_config_path:
+            legacy_changes[config_path] = (
+                None
+                if definition["config_created"] and not document
+                else _json_bytes(document)
+            )
+
     source_id = _source_digest(source, source_files)
     version_name = (
         f"{_SAFE_VERSION.sub('-', __version__)}-{source_id[:12]}"
@@ -374,6 +414,22 @@ def _install_or_update(
         system_python,
         version_root,
     )
+    if resolved_model_command is None:
+        if bundled_codex is None:
+            raise ManagementError("required codex executable is unavailable")
+        resolved_model_command = _validate_model_command(
+            (
+                str(python_interpreter),
+                "-m",
+                "context_compactor.codex_adapter",
+                "--codex-command",
+                str(bundled_codex),
+            ),
+            which,
+        )
+        model_adapter = "bundled_codex"
+    else:
+        model_adapter = "external"
 
     global_manifest = current_global or {
         "schema_version": MANIFEST_VERSION,
@@ -406,7 +462,7 @@ def _install_or_update(
         "installed_at": timestamp,
     }
     installed_hosts = _host_definitions(project_manifest)
-    changes: dict[Path, Optional[bytes]] = {}
+    changes: dict[Path, Optional[bytes]] = dict(legacy_changes)
     for host in selected:
         config_path, document, config_existed = hook_documents[host]
         previous = installed_hosts.get(host)
@@ -439,6 +495,7 @@ def _install_or_update(
             "install_root": str(installation),
             "python_interpreter": str(python_interpreter),
             "model_command": list(resolved_model_command),
+            "model_adapter": model_adapter,
             "hosts": installed_hosts,
             "updated_at": timestamp,
         }
@@ -476,6 +533,8 @@ def _install_or_update(
             "ok": True,
             "source_created": source_created,
             "source_changed": previous_source_id != source_id,
+            "legacy_hooks_removed": legacy_hooks_removed,
+            "model_adapter": model_adapter,
         }
     )
     return report
@@ -536,12 +595,22 @@ def _collect_status(
         if project_manifest is not None
         else []
     )
-    model_available = _command_available(model_command, which)
+    model_adapter = (
+        str(project_manifest.get("model_adapter", "external"))
+        if project_manifest is not None
+        else None
+    )
+    model_available = _model_command_available(
+        model_command,
+        model_adapter,
+        which,
+    )
     hook_reports = []
     for host in selected:
         definition = installed_hosts.get(host)
         hook_issues = []
         counts = {event: 0 for event in HOOK_EVENTS}
+        document = None
         if isinstance(definition, dict):
             config_path = _host_config_path(root, host)
             if Path(str(definition.get("config_path", ""))) != config_path:
@@ -557,7 +626,16 @@ def _collect_status(
                         hook_issues.append("hooks_disabled")
                 except ManagementError:
                     hook_issues.append("hook_config_invalid")
-            if any(counts[event] != 1 for event in HOOK_EVENTS):
+            definition_mismatch = any(
+                counts[event] != 1 for event in HOOK_EVENTS
+            )
+            if (
+                host == HOST_CODEX
+                and document is not None
+                and _count_codex_startup_hooks(document, definition) != 1
+            ):
+                definition_mismatch = True
+            if definition_mismatch:
                 hook_issues.append("hook_definition_mismatch")
         else:
             config_path = _host_config_path(root, host)
@@ -611,6 +689,7 @@ def _collect_status(
         and Path(str(python_interpreter)).is_file(),
         "active_source": active_source,
         "hook_wrapper": wrapper,
+        "model_adapter": model_adapter,
         "powershell_available": _any_executable_available(
             ("powershell.exe", "powershell"), which
         ),
@@ -1050,7 +1129,10 @@ def _add_owned_hooks(
         if host == HOST_CODEX:
             handler["statusMessage"] = "Loading bounded project context"
             handler["commandWindows"] = definition["command_windows"]
-        groups.append({"hooks": [handler]})
+        group: dict[str, object] = {"hooks": [handler]}
+        if host == HOST_CODEX and event == "SessionStart":
+            group["matcher"] = "^startup$"
+        groups.append(group)
         hooks[event] = groups
 
 
@@ -1068,6 +1150,20 @@ def _count_owned_hooks(
             if _owned_handler(handler, definition)
         )
     return counts
+
+
+def _count_codex_startup_hooks(
+    document: dict[str, object],
+    definition: Mapping[str, object],
+) -> int:
+    hooks = _hooks_object(document, create=False)
+    return sum(
+        1
+        for group in _hook_groups(hooks, "SessionStart")
+        if group.get("matcher") == "^startup$"
+        for handler in _group_handlers(group, "SessionStart")
+        if _owned_handler(handler, definition)
+    )
 
 
 def _remove_owned_hooks(
@@ -1150,6 +1246,78 @@ def _owned_handler(
     return not command_windows or (
         handler.get("commandWindows") == command_windows
     )
+
+
+def _legacy_hook_installations(
+    project_root: Path,
+    selected: Sequence[str],
+    include_user_legacy: bool,
+) -> Tuple[Tuple[Path, str, dict[str, object]], ...]:
+    installations = []
+    for root in _legacy_install_roots(project_root, include_user_legacy):
+        path = root / ".context-compactor" / "install.json"
+        if not path.exists():
+            continue
+        document = _load_json_object(path, "legacy install manifest")
+        if "version" not in document:
+            continue
+        if document.get("version") != LEGACY_MANIFEST_VERSION:
+            raise ManagementError("legacy install manifest version is unsupported")
+        hosts = document.get("hosts")
+        if not isinstance(hosts, dict):
+            raise ManagementError("legacy install manifest hosts are invalid")
+        for host in selected:
+            raw = hosts.get(host)
+            if raw is None:
+                continue
+            if not isinstance(raw, dict):
+                raise ManagementError(
+                    "legacy install manifest host definition is invalid"
+                )
+            command = raw.get("command")
+            command_windows = raw.get("command_windows", "")
+            config_created = raw.get("config_created")
+            if (
+                not isinstance(command, str)
+                or not command.strip()
+                or len(command) > 32_768
+                or any(ord(character) < 32 for character in command)
+                or not isinstance(command_windows, str)
+                or len(command_windows) > 32_768
+                or any(ord(character) < 32 for character in command_windows)
+                or not isinstance(config_created, bool)
+            ):
+                raise ManagementError(
+                    "legacy install manifest host definition is invalid"
+                )
+            installations.append(
+                (
+                    root,
+                    host,
+                    {
+                        "command": command,
+                        "command_windows": command_windows,
+                        "config_created": config_created,
+                    },
+                )
+            )
+    return tuple(installations)
+
+
+def _legacy_install_roots(
+    project_root: Path,
+    include_user_legacy: bool,
+) -> Tuple[Path, ...]:
+    roots = [project_root.resolve(strict=False)]
+    if not include_user_legacy:
+        return tuple(roots)
+    try:
+        home = Path.home().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return tuple(roots)
+    if home not in roots:
+        roots.append(home)
+    return tuple(roots)
 
 
 def _load_optional_manifest(
@@ -1369,6 +1537,34 @@ def _command_available(value: object, which: _Which) -> bool:
         return False
     try:
         _resolve_executable(value[0], which)
+    except ManagementError:
+        return False
+    return True
+
+
+def _model_command_available(
+    value: object,
+    model_adapter: object,
+    which: _Which,
+) -> bool:
+    if not _command_available(value, which):
+        return False
+    if model_adapter != "bundled_codex":
+        return True
+    if not isinstance(value, list) or value[1:3] != [
+        "-m",
+        "context_compactor.codex_adapter",
+    ]:
+        return False
+    try:
+        option = value.index("--codex-command", 3)
+        command = value[option + 1]
+    except (IndexError, ValueError):
+        return False
+    if not isinstance(command, str):
+        return False
+    try:
+        _resolve_executable(command, which)
     except ManagementError:
         return False
     return True

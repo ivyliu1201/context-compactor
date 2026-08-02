@@ -210,6 +210,38 @@ class HostTests(unittest.TestCase):
             self.assertIn(REDACTION_MARKER, row[0])
             self.assertGreaterEqual(row[1], 2)
 
+    def test_repeated_session_start_is_read_only_and_never_launches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = RecordingLauncher()
+            payload = codex_payload(EVENT_SESSION_START, source="startup")
+
+            first = handle_hook(
+                HOST_CODEX,
+                payload,
+                ("unused-model",),
+                project_root=root,
+                received_at=NOW,
+                launcher=launcher,
+            )
+            second = handle_hook(
+                HOST_CODEX,
+                payload,
+                ("unused-model",),
+                project_root=root,
+                received_at=NOW + timedelta(seconds=1),
+                launcher=launcher,
+            )
+
+            self.assertEqual(first.output, b"")
+            self.assertEqual(second.output, b"")
+            self.assertFalse(first.enqueued)
+            self.assertFalse(second.enqueued)
+            self.assertFalse(first.worker_started)
+            self.assertFalse(second.worker_started)
+            self.assertEqual(launcher.calls, [])
+            self.assertFalse(project_paths(root).journal.exists())
+
     def test_injects_last_state_using_both_host_output_protocols(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

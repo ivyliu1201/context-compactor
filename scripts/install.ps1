@@ -82,27 +82,26 @@ if ($Action -eq "install" -or $Action -eq "update") {
     if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
         throw "Git is required for source installation and update."
     }
-    if ([string]::IsNullOrWhiteSpace($ModelCommandJson)) {
-        throw "-ModelCommandJson is required for install and update."
-    }
-    $trimmedModelCommandJson = $ModelCommandJson.Trim()
-    if (-not $trimmedModelCommandJson.StartsWith("[") -or
-        -not $trimmedModelCommandJson.EndsWith("]")) {
-        throw "-ModelCommandJson must be a JSON array of command arguments."
-    }
-    try {
-        $parsedModelCommand = ConvertFrom-Json -InputObject $ModelCommandJson
-        $modelCommand = @($parsedModelCommand | ForEach-Object { $_ })
-    } catch {
-        throw "-ModelCommandJson must be a JSON array of command arguments."
-    }
-    if ($modelCommand.Count -eq 0) {
-        throw "-ModelCommandJson must contain at least one command argument."
-    }
-    foreach ($argument in $modelCommand) {
-        if ($argument -isnot [string] -or
-            [string]::IsNullOrWhiteSpace([string]$argument)) {
-            throw "-ModelCommandJson must contain only non-empty strings."
+    if (-not [string]::IsNullOrWhiteSpace($ModelCommandJson)) {
+        $trimmedModelCommandJson = $ModelCommandJson.Trim()
+        if (-not $trimmedModelCommandJson.StartsWith("[") -or
+            -not $trimmedModelCommandJson.EndsWith("]")) {
+            throw "-ModelCommandJson must be a JSON array of command arguments."
+        }
+        try {
+            $parsedModelCommand = ConvertFrom-Json -InputObject $ModelCommandJson
+            $modelCommand = @($parsedModelCommand | ForEach-Object { $_ })
+        } catch {
+            throw "-ModelCommandJson must be a JSON array of command arguments."
+        }
+        if ($modelCommand.Count -eq 0) {
+            throw "-ModelCommandJson must contain at least one command argument."
+        }
+        foreach ($argument in $modelCommand) {
+            if ($argument -isnot [string] -or
+                [string]::IsNullOrWhiteSpace([string]$argument)) {
+                throw "-ModelCommandJson must contain only non-empty strings."
+            }
         }
     }
 }
@@ -123,10 +122,12 @@ if ($Action -eq "install" -or $Action -eq "update") {
         "--source-root",
         $sourceRoot,
         "--python",
-        $pythonPath,
-        "--model-command"
+        $pythonPath
     )
-    $arguments += $modelCommand
+    if ($modelCommand.Count -gt 0) {
+        $arguments += "--model-command"
+        $arguments += $modelCommand
+    }
 }
 
 Push-Location $sourceRoot
