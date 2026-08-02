@@ -417,8 +417,17 @@ function Invoke-WebRequest {
             installation = (
                 temporary / "Local App Data" / "context-compactor"
             )
-            self.assertIn(
-                f"Install location: {installation}",
+            install_location_prefix = "Install location: "
+            install_location_line = next(
+                line
+                for line in first.stdout.splitlines()
+                if line.startswith(install_location_prefix)
+            )
+            displayed_installation = Path(
+                install_location_line[len(install_location_prefix) :]
+            )
+            self.assertTrue(
+                os.path.samefile(displayed_installation, installation),
                 first.stdout,
             )
             first_manifest = json.loads(
