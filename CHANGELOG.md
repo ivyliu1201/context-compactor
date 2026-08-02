@@ -7,6 +7,29 @@ public release.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-08-02
+
+### Changed
+
+- Changed the one-command bootstrap from raw installer JSON to color-coded
+  progress, success, result, project path, install location, and next-step
+  messages.
+- Kept `scripts/install.ps1` machine-readable JSON output unchanged for
+  existing automation and direct source-tree management.
+- Restyled the English and Traditional Chinese README headers with centered
+  navigation and colored release, CI, runtime, and license badges.
+- Pinned the documented one-command entry point to the `v3.2.0` release tag.
+
+### Verification
+
+- The complete Python suite passed 79 tests with 2 environment-dependent skips.
+- The isolated archive-backed PowerShell test passed first installation and a
+  repeated no-op update while confirming that bootstrap output contains no raw
+  installer JSON and temporary downloads are removed.
+- The unexpected-download-host PowerShell test continued to reject an
+  untrusted release URL.
+- PowerShell syntax parsing passed for the updated bootstrap.
+
 ## [3.1.0] - 2026-08-02
 
 ### Added

@@ -1,8 +1,21 @@
-# context-compactor
+<div align="center">
 
-[中文說明](README.zh-TW.md)
+# 🧠 context-compactor
 
-`context-compactor` is a local-first context-compaction product for coding agents.
+**Local-first context compression for coding agents**
+
+Keep durable project context readable and bounded across Codex and Claude
+sessions—without storing full prompts by default.
+
+[繁體中文](README.zh-TW.md) · [One-command install](#windows-one-command-install-or-update) · [Privacy](#privacy) · [Verification](#verification)
+
+[![Latest Release](https://img.shields.io/github/v/release/ivyliu1201/context-compactor?style=for-the-badge&color=4f46e5)](https://github.com/ivyliu1201/context-compactor/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/ivyliu1201/context-compactor/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI)](https://github.com/ivyliu1201/context-compactor/actions/workflows/ci.yml)
+![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=for-the-badge&logo=powershell&logoColor=white)
+[![Apache 2.0](https://img.shields.io/github/license/ivyliu1201/context-compactor?style=for-the-badge&color=0f766e)](LICENSE)
+
+</div>
 
 ## Product
 
@@ -23,21 +36,26 @@ required. Run this same command for both the first installation and every
 later update:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.1.0/scripts/bootstrap.ps1')))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.2.0/scripts/bootstrap.ps1')))"
 ```
 
-The command loads a version-pinned bootstrap from the `v3.1.0` release tag.
+The command loads a version-pinned bootstrap from the `v3.2.0` release tag.
 That bootstrap downloads the latest public stable release from this repository,
 checks the repository download URL, release tag, and source version, then runs
 the idempotent source installer. Temporary download files are removed when it
 finishes. Versioned source and a private venv are installed under
 `%LOCALAPPDATA%\context-compactor` by default.
 
-After the command returns JSON with `"ok": true`, start Codex from that same
-project directory. If PowerShell blocks the npm `codex.ps1` wrapper, use
-`codex.cmd`. Approve the project Hook if Codex asks for trust. The managed
-`SessionStart` Hook runs only for `startup`; normal prompts are handled by
-the background memory worker.
+During the run, cyan `[1/4]`–`[4/4]` messages show progress. A green
+`[OK] context-compactor ... is ready.` message confirms success, and
+`[RESULT]` reports whether the project was installed, updated, or already up
+to date. The installer JSON remains available through `scripts/install.ps1`
+for automation but is no longer printed by the one-command bootstrap.
+
+After success, start Codex from that same project directory. If PowerShell
+blocks the npm `codex.ps1` wrapper, use `codex.cmd`. Approve the project Hook
+if Codex asks for trust. The managed `SessionStart` Hook runs only for
+`startup`; normal prompts are handled by the background memory worker.
 
 ### Source-tree management
 

@@ -342,15 +342,15 @@ class ManagementTests(unittest.TestCase):
 function Invoke-RestMethod {
     [CmdletBinding()]
     param([string]$Uri, $Headers, [string]$Method)
-    if ($Uri -eq 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.1.0/scripts/bootstrap.ps1') {
+    if ($Uri -eq 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.2.0/scripts/bootstrap.ps1') {
         return Get-Content -Raw -Encoding UTF8 $env:CC_BOOTSTRAP
     }
     if ($Uri -ne 'https://api.github.com/repos/ivyliu1201/context-compactor/releases/latest') {
         throw 'unexpected release API URL'
     }
     [pscustomobject]@{
-        tag_name = 'v3.1.0'
-        zipball_url = 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/v3.1.0'
+        tag_name = 'v3.2.0'
+        zipball_url = 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/v3.2.0'
         draft = $false
         prerelease = $false
     }
@@ -363,12 +363,12 @@ function Invoke-WebRequest {
         [switch]$UseBasicParsing,
         [string]$OutFile
     )
-    if ($Uri -ne 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/v3.1.0') {
+    if ($Uri -ne 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/v3.2.0') {
         throw 'unexpected release download URL'
     }
     Copy-Item -LiteralPath $env:CC_ARCHIVE -Destination $OutFile
 }
-& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.1.0/scripts/bootstrap.ps1')))
+& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.2.0/scripts/bootstrap.ps1')))
 """
 
             def run_bootstrap() -> subprocess.CompletedProcess[str]:
@@ -391,19 +391,59 @@ function Invoke-WebRequest {
 
             first = run_bootstrap()
             self.assertEqual(first.returncode, 0, first.stderr)
-            first_report = json.loads(first.stdout)
-            self.assertTrue(first_report["installed"])
-            self.assertTrue(first_report["source_created"])
-            self.assertTrue(first_report["source_changed"])
-            self.assertEqual(Path(first_report["project_root"]), project.resolve())
+            self.assertIn(
+                "[1/4] Checking the latest stable release...",
+                first.stdout,
+            )
+            self.assertIn(
+                "[2/4] Downloading context-compactor v3.2.0...",
+                first.stdout,
+            )
+            self.assertIn(
+                "[3/4] Verifying the release package...",
+                first.stdout,
+            )
+            self.assertIn("[4/4] Installing for codex...", first.stdout)
+            self.assertIn(
+                "[OK] context-compactor v3.2.0 is ready.",
+                first.stdout,
+            )
+            self.assertIn("[RESULT] Installed", first.stdout)
+            self.assertIn(f"Project: {project.resolve()}", first.stdout)
+            self.assertIn("[NEXT] Start your coding agent", first.stdout)
+            self.assertNotIn('"installed":', first.stdout)
+            self.assertNotIn('"ok":', first.stdout)
+
+            installation = (
+                temporary / "Local App Data" / "context-compactor"
+            )
+            self.assertIn(
+                f"Install location: {installation}",
+                first.stdout,
+            )
+            first_manifest = json.loads(
+                (installation / "install.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(first_manifest["package_version"], "3.2.0")
+            first_version_root = first_manifest["version_root"]
 
             second = run_bootstrap()
             self.assertEqual(second.returncode, 0, second.stderr)
-            second_report = json.loads(second.stdout)
-            self.assertTrue(second_report["installed"])
-            self.assertFalse(second_report["source_created"])
-            self.assertFalse(second_report["source_changed"])
-            self.assertEqual(second_report["command"], "install")
+            self.assertIn(
+                "[OK] context-compactor v3.2.0 is ready.",
+                second.stdout,
+            )
+            self.assertIn("[RESULT] Already up to date", second.stdout)
+            self.assertIn("[NEXT] Start your coding agent", second.stdout)
+            self.assertNotIn('"installed":', second.stdout)
+            self.assertNotIn('"ok":', second.stdout)
+            second_manifest = json.loads(
+                (installation / "install.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                second_manifest["version_root"],
+                first_version_root,
+            )
             self.assertFalse(
                 any(bootstrap_temp.glob("context-compactor-bootstrap-*"))
             )

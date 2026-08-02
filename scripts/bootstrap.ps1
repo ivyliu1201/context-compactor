@@ -16,6 +16,22 @@ param(
 )
 
 Set-StrictMode -Version Latest
+
+function Write-BootstrapStatus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [Parameter(Mandatory = $true)]
+        [ConsoleColor]$Color
+    )
+
+    Write-Host ('[{0}] {1}' -f $Label, $Message) -ForegroundColor $Color
+}
+
 $ErrorActionPreference = "Stop"
 
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
@@ -34,6 +50,11 @@ $headers = @{
 [Net.ServicePointManager]::SecurityProtocol =
     [Net.ServicePointManager]::SecurityProtocol -bor
     [Net.SecurityProtocolType]::Tls12
+
+Write-BootstrapStatus `
+    -Label '1/4' `
+    -Message 'Checking the latest stable release...' `
+    -Color Cyan
 
 $release = Invoke-RestMethod `
     -Uri $releaseApi `
@@ -87,6 +108,10 @@ if (-not $workspace.StartsWith(
 
 New-Item -ItemType Directory -Path $workspace | Out-Null
 try {
+    Write-BootstrapStatus `
+        -Label '2/4' `
+        -Message ('Downloading context-compactor {0}...' -f $tagName) `
+        -Color Cyan
     $archivePath = Join-Path $workspace "release.zip"
     $extractPath = Join-Path $workspace "source"
     Invoke-WebRequest `
@@ -94,6 +119,10 @@ try {
         -Headers $headers `
         -UseBasicParsing `
         -OutFile $archivePath
+    Write-BootstrapStatus `
+        -Label '3/4' `
+        -Message 'Verifying the release package...' `
+        -Color Cyan
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath
 
     $sourceRoots = @(
@@ -143,9 +172,66 @@ try {
         $installerArguments.ModelCommandJson = $ModelCommandJson
     }
 
-    & (Join-Path $sourceRoot "scripts\install.ps1") @installerArguments
+    Write-BootstrapStatus `
+        -Label '4/4' `
+        -Message ('Installing for {0}...' -f $AgentHost) `
+        -Color Cyan
+    $installerOutput = @(
+        & (Join-Path $sourceRoot "scripts\install.ps1") @installerArguments
+    )
+    $installerReport = ConvertFrom-Json -InputObject (
+        $installerOutput -join [Environment]::NewLine
+    )
+    if ($null -eq $installerReport) {
+        throw 'Installer did not return a result.'
+    }
+
+    $requiredReportProperties = @(
+        'ok',
+        'installed',
+        'source_created',
+        'source_changed',
+        'install_root'
+    )
+    $missingReportProperties = @(
+        $requiredReportProperties | Where-Object {
+            $installerReport.PSObject.Properties.Name -notcontains $_
+        }
+    )
+    if ($missingReportProperties.Count -gt 0) {
+        throw 'Installer returned an incomplete result.'
+    }
+    if (-not [bool]$installerReport.ok -or
+        -not [bool]$installerReport.installed) {
+        throw 'Installer did not complete successfully.'
+    }
+
+    if ([bool]$installerReport.source_created) {
+        $installationResult = 'Installed'
+    } elseif ([bool]$installerReport.source_changed) {
+        $installationResult = 'Updated'
+    } else {
+        $installationResult = 'Already up to date'
+    }
+    $installedLocation = [string]$installerReport.install_root
 } finally {
     if (Test-Path -LiteralPath $workspace) {
         Remove-Item -LiteralPath $workspace -Recurse -Force
     }
 }
+
+Write-Host
+Write-BootstrapStatus `
+    -Label 'OK' `
+    -Message ('context-compactor {0} is ready.' -f $tagName) `
+    -Color Green
+Write-BootstrapStatus `
+    -Label 'RESULT' `
+    -Message $installationResult `
+    -Color Green
+Write-Host ('Project: {0}' -f $resolvedProjectRoot)
+Write-Host ('Install location: {0}' -f $installedLocation)
+Write-BootstrapStatus `
+    -Label 'NEXT' `
+    -Message 'Start your coding agent in this project and approve the Hook if prompted.' `
+    -Color Yellow

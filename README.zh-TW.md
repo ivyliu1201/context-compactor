@@ -1,8 +1,21 @@
-# context-compactor
+<div align="center">
 
-[English](README.md)
+# 🧠 context-compactor
 
-`context-compactor` 是供 coding agents 使用的 local-first context 壓縮產品。
+**為 coding agent 打造的 local-first context 壓縮工具**
+
+讓 Codex 與 Claude 的長期專案脈絡保持精簡、可讀且有界，預設不保存完整
+prompt。
+
+[English](README.md) · [一鍵安裝](#windows-一鍵安裝或更新) · [隱私](#隱私) · [驗證](#驗證)
+
+[![Latest Release](https://img.shields.io/github/v/release/ivyliu1201/context-compactor?style=for-the-badge&color=4f46e5)](https://github.com/ivyliu1201/context-compactor/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/ivyliu1201/context-compactor/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI)](https://github.com/ivyliu1201/context-compactor/actions/workflows/ci.yml)
+![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=for-the-badge&logo=powershell&logoColor=white)
+[![Apache 2.0](https://img.shields.io/github/license/ivyliu1201/context-compactor?style=for-the-badge&color=0f766e)](LICENSE)
+
+</div>
 
 ## 產品
 
@@ -21,19 +34,24 @@ Windows PowerShell 5.1+、Git、Python 3.9+，以及已登入的 Codex CLI。
 第一次安裝與之後更新都執行同一條指令：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.1.0/scripts/bootstrap.ps1')))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.2.0/scripts/bootstrap.ps1')))"
 ```
 
-這條指令會先從 `v3.1.0` release tag 載入固定版本的 bootstrap。bootstrap
+這條指令會先從 `v3.2.0` release tag 載入固定版本的 bootstrap。bootstrap
 再從本 repository 取得最新的公開穩定 Release，並檢查下載網址、release tag
 與來源版本，再執行可重複呼叫的 source installer；完成後會清除暫存下載檔。
 版本化來源與私有 venv 預設安裝到
 `%LOCALAPPDATA%\context-compactor`。
 
-看到回傳 JSON 包含 `"ok": true` 後，請在同一個專案目錄啟動 Codex。
-若 PowerShell 阻擋 npm 的 `codex.ps1`，請改輸入 `codex.cmd`。Codex 若詢問
-是否信任 project Hook，請確認信任。受管理的 `SessionStart` Hook 只會在
-`startup` 執行；一般 prompt 由背景 memory worker 處理。
+執行時會以青色 `[1/4]`–`[4/4]` 顯示進度；看到綠色
+`[OK] context-compactor ... is ready.` 即代表完成，`[RESULT]` 會說明本次是
+首次安裝、已更新或已是最新版。供自動化使用的 installer JSON 仍可透過
+`scripts/install.ps1` 取得，但一鍵 bootstrap 不再直接顯示原始 JSON。
+
+成功後請在同一個專案目錄啟動 Codex。若 PowerShell 阻擋 npm 的
+`codex.ps1`，請改輸入 `codex.cmd`。Codex 若詢問是否信任 project Hook，
+請確認信任。受管理的 `SessionStart` Hook 只會在 `startup` 執行；一般
+prompt 由背景 memory worker 處理。
 
 ### Source tree 管理指令
 
