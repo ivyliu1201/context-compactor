@@ -7,6 +7,40 @@ public release.
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-08-03
+
+### Fixed
+
+- Reproduced the long-`%TEMP%` extraction failure from public v3.3.0, then
+  shortened the bootstrap temporary workspace and extraction directory names to
+  keep normal long-TEMP archive extraction within the Windows PowerShell 5.1
+  legacy path limit. The bootstrap workspace now uses `cc-<guid>` and its
+  extraction directory uses `s`.
+- Kept the repository download URL validation, release and source-version
+  verification, installer behavior, human-readable output, machine-readable
+  installer JSON interface, and cleanup safety checks unchanged.
+
+### Changed
+
+- Updated both READMEs to pin the documented one-command bootstrap entry point
+  to the `v3.3.1` tag.
+
+### Breaking Changes
+
+None.
+
+### Verification
+
+- The complete Python suite passed 82 tests with 2 environment-dependent skips.
+- The archive-backed PowerShell integration test used an 80-character temporary
+  directory and passed `Installed`, `Updated`, and `Already up to date`, with
+  the temporary directory empty afterwards.
+- The exact v3.3.1 candidate passed `Installed` then `Already up to date` using
+  the same long-TEMP length that reproduced the public v3.3.0 failure and an
+  archive entry containing 70 characters. It also verified the global
+  `USERPROFILE` owner and temporary-directory cleanup.
+- Python AST and all PowerShell parser checks passed.
+
 ## [3.3.0] - 2026-08-03
 
 ### Added

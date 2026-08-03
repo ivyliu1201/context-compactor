@@ -107,7 +107,7 @@ if ($downloadUri.Scheme -ne "https" -or
 
 $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $workspace = Join-Path $temporaryRoot (
-    "context-compactor-bootstrap-" + [Guid]::NewGuid().ToString("N")
+    "cc-" + [Guid]::NewGuid().ToString("N")
 )
 $temporaryPrefix = $temporaryRoot.TrimEnd(
     [IO.Path]::DirectorySeparatorChar,
@@ -127,7 +127,7 @@ try {
         -Message ('Downloading context-compactor {0}...' -f $tagName) `
         -Color Cyan
     $archivePath = Join-Path $workspace "release.zip"
-    $extractPath = Join-Path $workspace "source"
+    $extractPath = Join-Path $workspace "s"
     Invoke-WebRequest `
         -Uri $downloadUri.AbsoluteUri `
         -Headers $headers `

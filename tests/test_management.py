@@ -367,7 +367,9 @@ class ManagementTests(unittest.TestCase):
             tools.mkdir()
             profile = temporary / "profile"
             profile.mkdir()
-            bootstrap_temp = temporary / "bootstrap temp"
+            bootstrap_temp = temporary / (
+                "bootstrap-temp-" + ("x" * 80)
+            )
             bootstrap_temp.mkdir()
             (tools / "codex.cmd").write_text(
                 "@exit /b 0\r\n",
@@ -538,9 +540,7 @@ function Invoke-WebRequest {
                 third_manifest["version_root"],
                 second_version_root,
             )
-            self.assertFalse(
-                any(bootstrap_temp.glob("context-compactor-bootstrap-*"))
-            )
+            self.assertEqual(tuple(bootstrap_temp.iterdir()), ())
 
     @unittest.skipUnless(
         os.name == "nt" and shutil.which("powershell.exe") is not None,

@@ -35,10 +35,10 @@ prompt。
 Codex CLI。可從任何目錄執行這條指令；第一次安裝與之後更新都使用同一條：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.0/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetEnvironmentVariable('USERPROFILE'))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.1/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetEnvironmentVariable('USERPROFILE'))"
 ```
 
-這條指令會先從 `v3.3.0` release tag 載入固定版本的 bootstrap。bootstrap
+這條指令會先從 `v3.3.1` release tag 載入固定版本的 bootstrap。bootstrap
 再從本 repository 取得最新的公開穩定 Release，並檢查下載網址、release tag
 與來源版本，再執行可重複呼叫的 source installer；完成後會清除暫存下載檔。
 版本化來源與私有 venv 預設安裝到
@@ -128,7 +128,7 @@ python -B scripts/benchmark_v3.py --stage endurance `
 - 以上為確定性 benchmark 情境中實際觀測的 input-token 降幅，不保證每個
   live turn 或帳單成本都會得到相同比例。
 - 通過 correctness、privacy、state-budget、failed-candidate-corruption 各項 gate。
-- v3.3.0 未重跑 token benchmark，因為本次修正未改變 runtime compression 邏輯。
+- v3.3.1 未重跑 token benchmark，因為本次修正未改變 runtime compression 邏輯。
 
 ## 授權
 

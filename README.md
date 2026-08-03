@@ -37,10 +37,10 @@ required. Run this command from any directory for both the first installation
 and every later update:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.0/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetEnvironmentVariable('USERPROFILE'))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.1/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetEnvironmentVariable('USERPROFILE'))"
 ```
 
-The command loads a version-pinned bootstrap from the `v3.3.0` release tag.
+The command loads a version-pinned bootstrap from the `v3.3.1` release tag.
 That bootstrap downloads the latest public stable release from this repository,
 checks the repository download URL, release tag, and source version, then runs
 the idempotent source installer. Temporary download files are removed when it
@@ -138,7 +138,7 @@ python -B scripts/benchmark_v3.py --stage endurance `
 - These are observed input-token reductions in the deterministic benchmark
   scenario, not a guarantee of every live turn or billed-cost savings.
 - Gates passed: correctness, privacy, state-budget, failed-candidate-corruption.
-- v3.3.0 does not rerun the token benchmark because its runtime compression
+- v3.3.1 does not rerun the token benchmark because its runtime compression
   logic is unchanged.
 
 ## License
