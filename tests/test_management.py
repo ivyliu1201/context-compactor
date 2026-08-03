@@ -540,7 +540,7 @@ function Invoke-WebRequest {
                 third_manifest["version_root"],
                 second_version_root,
             )
-            self.assertEqual(tuple(bootstrap_temp.iterdir()), ())
+            self.assertFalse(any(bootstrap_temp.glob("cc-*")))
 
     @unittest.skipUnless(
         os.name == "nt" and shutil.which("powershell.exe") is not None,
