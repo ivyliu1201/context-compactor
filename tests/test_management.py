@@ -9,8 +9,10 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 from context_compactor.journal import EnqueueRequest, Journal, digest_text
@@ -19,6 +21,7 @@ from context_compactor.management import (
     ManagementError,
     doctor,
     install_source,
+    resolve_hook_project,
     status,
     uninstall,
     update_source,
@@ -285,6 +288,21 @@ class ManagementTests(unittest.TestCase):
                 destination = package_root / source.relative_to(source_package)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, destination)
+            version_file = package_root / "__init__.py"
+            version_source = version_file.read_text(encoding="utf-8")
+            version_line = next(
+                line
+                for line in version_source.splitlines()
+                if line.startswith("__version__ = ")
+            )
+            self.assertEqual(version_source.count(version_line), 1)
+            version_file.write_text(
+                version_source.replace(
+                    version_line,
+                    '__version__ = "3.2.0"',
+                ),
+                encoding="utf-8",
+            )
             scripts_root = release_root / "scripts"
             scripts_root.mkdir(parents=True)
             for name in ("install.ps1", "context-compactor-hook.ps1"):
@@ -307,6 +325,42 @@ class ManagementTests(unittest.TestCase):
                     if path.is_file():
                         bundle.write(path, path.relative_to(archive_root))
 
+            updated_archive_root = temporary / "updated archive"
+            updated_release_root = (
+                updated_archive_root
+                / "ivyliu1201-context-compactor-test"
+            )
+            shutil.copytree(release_root, updated_release_root)
+            updated_version_file = (
+                updated_release_root / "context_compactor" / "__init__.py"
+            )
+            updated_version_source = updated_version_file.read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(
+                updated_version_source.count('__version__ = "3.2.0"'),
+                1,
+            )
+            updated_version_file.write_text(
+                updated_version_source.replace(
+                    '__version__ = "3.2.0"',
+                    '__version__ = "3.2.1"',
+                ),
+                encoding="utf-8",
+            )
+            updated_archive = temporary / "updated-release.zip"
+            with zipfile.ZipFile(
+                updated_archive,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+            ) as bundle:
+                for path in updated_release_root.rglob("*"):
+                    if path.is_file():
+                        bundle.write(
+                            path,
+                            path.relative_to(updated_archive_root),
+                        )
+
             project = temporary / "fresh project"
             project.mkdir()
             tools = temporary / "tools"
@@ -326,7 +380,6 @@ class ManagementTests(unittest.TestCase):
                     "PATH": str(tools)
                     + os.pathsep
                     + environment.get("PATH", ""),
-                    "CC_ARCHIVE": str(archive),
                     "CC_BOOTSTRAP": str(
                         SOURCE_ROOT / "scripts" / "bootstrap.ps1"
                     ),
@@ -349,8 +402,8 @@ function Invoke-RestMethod {
         throw 'unexpected release API URL'
     }
     [pscustomobject]@{
-        tag_name = 'v3.2.0'
-        zipball_url = 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/v3.2.0'
+        tag_name = $env:CC_RELEASE_TAG
+        zipball_url = 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/' + $env:CC_RELEASE_TAG
         draft = $false
         prerelease = $false
     }
@@ -363,7 +416,8 @@ function Invoke-WebRequest {
         [switch]$UseBasicParsing,
         [string]$OutFile
     )
-    if ($Uri -ne 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/v3.2.0') {
+    $expected = 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/' + $env:CC_RELEASE_TAG
+    if ($Uri -ne $expected) {
         throw 'unexpected release download URL'
     }
     Copy-Item -LiteralPath $env:CC_ARCHIVE -Destination $OutFile
@@ -371,7 +425,17 @@ function Invoke-WebRequest {
 & ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.2.0/scripts/bootstrap.ps1')))
 """
 
-            def run_bootstrap() -> subprocess.CompletedProcess[str]:
+            def run_bootstrap(
+                tag: str,
+                release_archive: Path,
+            ) -> subprocess.CompletedProcess[str]:
+                run_environment = environment.copy()
+                run_environment.update(
+                    {
+                        "CC_ARCHIVE": str(release_archive),
+                        "CC_RELEASE_TAG": tag,
+                    }
+                )
                 return subprocess.run(
                     (
                         powershell,
@@ -384,12 +448,12 @@ function Invoke-WebRequest {
                     capture_output=True,
                     check=False,
                     cwd=project,
-                    env=environment,
+                    env=run_environment,
                     text=True,
                     timeout=180,
                 )
 
-            first = run_bootstrap()
+            first = run_bootstrap("v3.2.0", archive)
             self.assertEqual(first.returncode, 0, first.stderr)
             self.assertIn(
                 "[1/4] Checking the latest stable release...",
@@ -436,22 +500,43 @@ function Invoke-WebRequest {
             self.assertEqual(first_manifest["package_version"], "3.2.0")
             first_version_root = first_manifest["version_root"]
 
-            second = run_bootstrap()
+            second = run_bootstrap("v3.2.1", updated_archive)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertIn(
-                "[OK] context-compactor v3.2.0 is ready.",
+                "[2/4] Downloading context-compactor v3.2.1...",
                 second.stdout,
             )
-            self.assertIn("[RESULT] Already up to date", second.stdout)
+            self.assertIn(
+                "[OK] context-compactor v3.2.1 is ready.",
+                second.stdout,
+            )
+            self.assertIn("[RESULT] Updated", second.stdout)
             self.assertIn("[NEXT] Start your coding agent", second.stdout)
             self.assertNotIn('"installed":', second.stdout)
             self.assertNotIn('"ok":', second.stdout)
             second_manifest = json.loads(
                 (installation / "install.json").read_text(encoding="utf-8")
             )
+            self.assertEqual(second_manifest["package_version"], "3.2.1")
+            second_version_root = second_manifest["version_root"]
+            self.assertNotEqual(second_version_root, first_version_root)
+
+            third = run_bootstrap("v3.2.1", updated_archive)
+            self.assertEqual(third.returncode, 0, third.stderr)
+            self.assertIn(
+                "[OK] context-compactor v3.2.1 is ready.",
+                third.stdout,
+            )
+            self.assertIn("[RESULT] Already up to date", third.stdout)
+            self.assertIn("[NEXT] Start your coding agent", third.stdout)
+            self.assertNotIn('"installed":', third.stdout)
+            self.assertNotIn('"ok":', third.stdout)
+            third_manifest = json.loads(
+                (installation / "install.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(
-                second_manifest["version_root"],
-                first_version_root,
+                third_manifest["version_root"],
+                second_version_root,
             )
             self.assertFalse(
                 any(bootstrap_temp.glob("context-compactor-bootstrap-*"))
@@ -1157,6 +1242,210 @@ function Invoke-RestMethod {
             self.assertFalse(
                 (rollback_root / "context-compactor-hook.ps1").exists()
             )
+
+    def test_global_codex_hook_registers_each_project_once_and_preserves_local_hooks(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            profile = temporary / "profile"
+            profile.mkdir()
+            automatic_project = temporary / "automatic project"
+            automatic_project.mkdir()
+            local_project = temporary / "local project"
+            local_project.mkdir()
+            installation = temporary / "install"
+            tools = temporary / "tools"
+            tools.mkdir()
+            which = _which(tools, "codex")
+
+            def is_global_root(root: Path) -> bool:
+                return root.resolve(strict=False) == profile.resolve(
+                    strict=False
+                )
+
+            with patch(
+                "context_compactor.management._prepare_private_venv",
+                side_effect=_fake_private_venv,
+            ), patch(
+                "context_compactor.management._is_global_codex_root",
+                side_effect=is_global_root,
+            ):
+                installed = install_source(
+                    project_root=profile,
+                    source_root=SOURCE_ROOT,
+                    install_root=installation,
+                    python=sys.executable,
+                    hosts=("codex",),
+                    model_command=(sys.executable, "-c", "pass"),
+                    now=NOW,
+                    which=which,
+                )
+
+                install_manifest = json.loads(
+                    (installation / "install.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(len(install_manifest["projects"]), 1)
+                owner_manifest_path = Path(
+                    next(iter(install_manifest["projects"].values()))
+                )
+                owner_manifest = json.loads(
+                    owner_manifest_path.read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    owner_manifest["hosts"]["codex"]["hook_scope"],
+                    "global",
+                )
+
+                automatic_id = hashlib.sha256(
+                    os.path.normcase(
+                        str(automatic_project.resolve(strict=False))
+                    ).encode("utf-8")
+                ).hexdigest()
+                automatic_manifest_path = (
+                    installation / "projects" / f"{automatic_id}.json"
+                )
+                session_root = resolve_hook_project(
+                    project_manifest=owner_manifest_path,
+                    host="codex",
+                    event_cwd=automatic_project,
+                    register=False,
+                    now=NOW,
+                )
+                self.assertEqual(session_root, automatic_project.resolve())
+                self.assertFalse(automatic_manifest_path.exists())
+
+                def register_session(_: int) -> Optional[Path]:
+                    return resolve_hook_project(
+                        project_manifest=owner_manifest_path,
+                        host="codex",
+                        event_cwd=automatic_project,
+                        register=True,
+                        now=NOW + timedelta(seconds=1),
+                    )
+
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    registered_roots = list(
+                        executor.map(register_session, range(3))
+                    )
+                self.assertEqual(
+                    registered_roots,
+                    [automatic_project.resolve()] * 3,
+                )
+
+                install_manifest = json.loads(
+                    (installation / "install.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(len(install_manifest["projects"]), 2)
+                automatic_manifest = json.loads(
+                    automatic_manifest_path.read_text(encoding="utf-8")
+                )
+                inherited = automatic_manifest["hosts"]["codex"]
+                self.assertEqual(
+                    inherited["hook_scope"],
+                    "global_inherited",
+                )
+                self.assertEqual(
+                    inherited["owner_project_id"],
+                    owner_manifest["project_id"],
+                )
+
+                automatic_status = status(
+                    project_root=automatic_project,
+                    install_root=installation,
+                    hosts=("codex",),
+                    now=NOW,
+                    which=which,
+                )
+                self.assertTrue(
+                    automatic_status["hooks"][0]["definition_healthy"]
+                )
+                self.assertFalse(
+                    automatic_status["hooks"][0][
+                        "manual_trust_required"
+                    ]
+                )
+                self.assertEqual(
+                    automatic_status["hooks"][0]["state"],
+                    "definition_ready",
+                )
+
+                global_config = profile / ".codex" / "hooks.json"
+                global_config_before = global_config.read_bytes()
+                install_source(
+                    project_root=local_project,
+                    source_root=SOURCE_ROOT,
+                    install_root=installation,
+                    python=sys.executable,
+                    hosts=("codex",),
+                    model_command=(sys.executable, "-c", "pass"),
+                    now=NOW + timedelta(seconds=2),
+                    which=which,
+                )
+                self.assertIsNone(
+                    resolve_hook_project(
+                        project_manifest=owner_manifest_path,
+                        host="codex",
+                        event_cwd=local_project,
+                        register=True,
+                        now=NOW + timedelta(seconds=3),
+                    )
+                )
+
+                removed_automatic = uninstall(
+                    project_root=automatic_project,
+                    install_root=installation,
+                    hosts=("codex",),
+                )
+                self.assertFalse(
+                    removed_automatic["installation_removed"]
+                )
+                self.assertEqual(
+                    global_config.read_bytes(),
+                    global_config_before,
+                )
+                resolve_hook_project(
+                    project_manifest=owner_manifest_path,
+                    host="codex",
+                    event_cwd=automatic_project,
+                    register=True,
+                    now=NOW + timedelta(seconds=4),
+                )
+
+                removed_global = uninstall(
+                    project_root=profile,
+                    install_root=installation,
+                    hosts=("codex",),
+                )
+                self.assertEqual(
+                    removed_global["auto_projects_removed"],
+                    1,
+                )
+                self.assertFalse(removed_global["installation_removed"])
+                self.assertFalse(automatic_manifest_path.exists())
+                self.assertFalse(global_config.exists())
+
+                local_status = status(
+                    project_root=local_project,
+                    install_root=installation,
+                    hosts=("codex",),
+                    now=NOW,
+                    which=which,
+                )
+                self.assertTrue(
+                    local_status["hooks"][0]["definition_healthy"]
+                )
+                removed_local = uninstall(
+                    project_root=local_project,
+                    install_root=installation,
+                    hosts=("codex",),
+                )
+                self.assertTrue(removed_local["installation_removed"])
+                self.assertFalse(installation.exists())
 
 
 if __name__ == "__main__":

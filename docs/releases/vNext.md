@@ -1,25 +1,31 @@
-# context-compactor v3.2.0
+# context-compactor v3.3.0
 
 ## Highlights
 
-- Replace raw one-command installer JSON with concise, color-coded progress and
-  next-step messages.
-- Preserve the existing idempotent installation path and the machine-readable
-  `scripts/install.ps1` interface used by automation.
-- Refresh both README headers with centered navigation and colored project
-  badges.
+- Add cwd-aware global Codex Hook registration so one global installation can
+  configure projects as they first submit prompts.
+- Share one project manifest, state directory, and journal across concurrent
+  Codex sessions without duplicate registration.
+- Keep the one-command installer friendly and color-coded while accurately
+  reporting installation, update, and already-current results.
 
 ## Changes
 
-- The bootstrap now displays four cyan progress steps, a green success/result
-  summary, project and install paths, and a yellow Hook trust reminder.
-- The bootstrap captures and validates the existing installer report instead
-  of printing it directly.
-- Result messages distinguish a first installation, an updated source, and an
-  already-current installation.
-- The documented one-command entry point is pinned to the `v3.2.0` release
-  tag.
-- English and Traditional Chinese README content remains aligned.
+- Each global Hook event resolves its project from the payload `cwd`.
+  `UserPromptSubmit` registers a project when necessary, while `SessionStart`
+  only reads existing state.
+- A registry lock ensures concurrent sessions register a project once and
+  reuse its `events.sqlite` journal.
+- A project-local Hook takes precedence over an inherited global Hook.
+  Removing a global owner cleans only its inherited registrations and leaves
+  local project data and Hooks intact.
+- The PowerShell Hook wrapper temporarily provides the managed project manifest
+  to the Python Hook, then restores the environment.
+- Bootstrap result messages now correctly distinguish `Installed`, `Updated`,
+  and `Already up to date`; `scripts/install.ps1` keeps its machine-readable
+  JSON interface for automation.
+- The documented one-command entry point is pinned to the `v3.3.0` release
+  tag, and both READMEs describe only the current architecture.
 
 ## Breaking Changes
 
@@ -27,21 +33,26 @@ None.
 
 ## Migration
 
-None. Existing installations can run the same one-command bootstrap from their
-project directory. Automation that requires JSON should continue to invoke
-`scripts/install.ps1` directly.
+No data migration is required. Run the same one-command bootstrap from any
+directory; it explicitly installs or updates the global Codex Hook in the
+current Windows user's home directory. Later projects are registered
+automatically on their first `UserPromptSubmit` according to the event `cwd`.
+Automation that requires JSON should continue to invoke `scripts/install.ps1`
+directly. Intentionally running the source installer with a project root
+creates a project-local Hook, which takes precedence over an inherited global
+Hook.
 
 ## Verification
 
-- The complete Python suite passed 79 tests with 2 environment-dependent skips.
-- The isolated archive-backed PowerShell test passed a first installation and
-  a repeated no-op update using the same documented command.
-- The test verified all four progress steps, success/result/next-step messages,
-  the v3.2.0 install manifest, absence of raw installer JSON, and cleanup of
-  bootstrap temporary files.
-- The unexpected-download-host test continued to reject an untrusted release
-  URL.
-- PowerShell syntax parsing passed for the updated bootstrap.
+- The complete Python suite passed 82 tests with 2 environment-dependent skips.
+- Core tests passed for global Hook cwd selection, one project journal shared
+  by multiple sessions, and global registration without duplicate entries.
+- The archive-backed PowerShell bootstrap integration passed installation,
+  update, and already-current results using the same bootstrap entry point.
+- Python AST, PowerShell parser, and `git diff --check` validation passed.
+- Two isolated fake Windows profiles verified global installation. For another
+  cwd, three concurrent `UserPromptSubmit` calls created one manifest and one
+  registry entry; all completed and shared one `events.sqlite` journal.
 
 ## Known Issues
 
@@ -49,5 +60,5 @@ project directory. Automation that requires JSON should continue to invoke
 - Requires PowerShell 5.1+, Git, Python 3.9+, network access to GitHub, and a
   signed-in Codex CLI when using the bundled adapter.
 - Organizational policies may still prohibit PowerShell or downloaded source.
-- This release changes installation presentation and documentation only; it
-  does not change the compression runtime or rerun the existing token benchmark.
+- v3.3.0 does not rerun the token benchmark because its runtime compression
+  logic is unchanged.

@@ -39,6 +39,20 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
 }
 
 $resolvedProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
+$expectedInstallDirectory = $null
+if (-not [string]::IsNullOrWhiteSpace($InstallDirectory)) {
+    $expectedInstallDirectory = [IO.Path]::GetFullPath($InstallDirectory)
+} elseif (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $expectedInstallDirectory = [IO.Path]::GetFullPath(
+        (Join-Path $env:LOCALAPPDATA "context-compactor")
+    )
+}
+$installationManifestExisted = (
+    $null -ne $expectedInstallDirectory -and
+    (Test-Path -LiteralPath (
+        Join-Path $expectedInstallDirectory "install.json"
+    ) -PathType Leaf)
+)
 $releaseApi =
     "https://api.github.com/repos/ivyliu1201/context-compactor/releases/latest"
 $headers = @{
@@ -206,7 +220,7 @@ try {
         throw 'Installer did not complete successfully.'
     }
 
-    if ([bool]$installerReport.source_created) {
+    if (-not $installationManifestExisted) {
         $installationResult = 'Installed'
     } elseif ([bool]$installerReport.source_changed) {
         $installationResult = 'Updated'

@@ -26,18 +26,19 @@ prompt。
 - 備援狀態檔為 `.context-compactor/state.backup.yaml`。
 - 輕量 journal 為 `.context-compactor/events.sqlite`。
 - Codex `SessionStart` 只匹配 `startup`，且不會建立工作或啟動模型 worker。
+- 全域 Codex Hook 會從每次事件 payload 的工作目錄解析專案；若專案已有 local
+  Hook，會優先使用 local Hook。
 
 ## Windows 一鍵安裝或更新
 
-請先在要啟用 Hook 的 coding project 根目錄開啟 PowerShell。環境需要
-Windows PowerShell 5.1+、Git、Python 3.9+，以及已登入的 Codex CLI。
-第一次安裝與之後更新都執行同一條指令：
+環境需要 Windows PowerShell 5.1+、Git、Python 3.9+，以及已登入的
+Codex CLI。可從任何目錄執行這條指令；第一次安裝與之後更新都使用同一條：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.2.0/scripts/bootstrap.ps1')))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.0/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetEnvironmentVariable('USERPROFILE'))"
 ```
 
-這條指令會先從 `v3.2.0` release tag 載入固定版本的 bootstrap。bootstrap
+這條指令會先從 `v3.3.0` release tag 載入固定版本的 bootstrap。bootstrap
 再從本 repository 取得最新的公開穩定 Release，並檢查下載網址、release tag
 與來源版本，再執行可重複呼叫的 source installer；完成後會清除暫存下載檔。
 版本化來源與私有 venv 預設安裝到
@@ -48,10 +49,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Cr
 首次安裝、已更新或已是最新版。供自動化使用的 installer JSON 仍可透過
 `scripts/install.ps1` 取得，但一鍵 bootstrap 不再直接顯示原始 JSON。
 
-成功後請在同一個專案目錄啟動 Codex。若 PowerShell 阻擋 npm 的
-`codex.ps1`，請改輸入 `codex.cmd`。Codex 若詢問是否信任 project Hook，
-請確認信任。受管理的 `SessionStart` Hook 只會在 `startup` 執行；一般
-prompt 由背景 memory worker 處理。
+此指令會在目前 Windows 使用者的家目錄建立或更新全域 Codex Hook。之後在任一
+coding project 啟動 Codex 時，全域 Hook 會依事件的 `cwd` 判斷專案；第一次
+`UserPromptSubmit` 會自動註冊該專案，不必為每個專案重新安裝。`SessionStart`
+可以讀取該 `cwd` 已有的狀態，但不會主動註冊專案。同一專案的多個 Codex session
+會共用一份 manifest、狀態目錄與 `events.sqlite` journal，registry lock 會避免重複
+註冊；若已有 project-local Hook，則優先使用 local Hook。若刻意以 project root
+執行 source installer，則會建立 project-local Hook。
+
+若 PowerShell 阻擋 npm 的 `codex.ps1`，請改輸入 `codex.cmd`。僅在 Codex
+詢問是否信任 global Hook 時確認信任。受管理的 `SessionStart` Hook 只會在
+`startup` 執行；一般 prompt 由背景 memory worker 處理。
 
 ### Source tree 管理指令
 
@@ -70,9 +78,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -A
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Action uninstall -ProjectRoot . -AgentHost codex
 ```
 
-source installer 支援 `AgentHost`：`codex`、`claude`、`all`。
-install/update 只移除可辨識 V2 manifest 精確記錄的 V2 Hook handler，並保留
-manifest、舊 `context.db`、專案狀態與無關的使用者 Hook。
+source installer 支援 `AgentHost`：`codex`、`claude`、`all`。install/update
+會保留既有專案狀態與無關的使用者 Hook。
 
 若要改用外部 adapter，可加入以下 override：
 
@@ -96,19 +103,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -A
 - 不保證可偵測到未知的新型機密格式。
 - 詳見 [docs/PRIVACY.md](docs/PRIVACY.md)。
 
-## 舊版資料庫遷移
-
-```
-python -m context_compactor migrate preview --project-root .
-python -m context_compactor migrate apply --project-root .
-```
-
-遷移會讀取舊版 `.context-compactor/context.db`，不會修改也不會刪除原始資料庫。
-
 ## 驗證
 
 - `python -B -m unittest discover -s tests`
-- 驗證結果：79 測試成功執行，含 2 個依環境條件 skip 的測試。
+- 驗證結果：82 測試成功執行，含 2 個依環境條件 skip 的測試。
 - 基準報告：[docs/benchmark-report-v3-2026-07-31.zh-TW.md](docs/benchmark-report-v3-2026-07-31.zh-TW.md)
 - 使用已登入的 Codex CLI 實際執行，模型為 `gpt-5.6-sol` 且 reasoning effort 為 `high`。
 
@@ -130,6 +128,7 @@ python -B scripts/benchmark_v3.py --stage endurance `
 - 以上為確定性 benchmark 情境中實際觀測的 input-token 降幅，不保證每個
   live turn 或帳單成本都會得到相同比例。
 - 通過 correctness、privacy、state-budget、failed-candidate-corruption 各項 gate。
+- v3.3.0 未重跑 token benchmark，因為本次修正未改變 runtime compression 邏輯。
 
 ## 授權
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -15,11 +16,13 @@ from .host import (
     HookError,
     diagnostic_line,
     handle_hook,
+    normalize_hook,
 )
 from .paths import ProjectPathError, resolve_project_root
 
 MANAGED_HOST_CODEX = "codex"
 MANAGED_HOST_CLAUDE = "claude"
+_PROJECT_MANIFEST_ENV = "CONTEXT_COMPACTOR_PROJECT_MANIFEST"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -175,11 +178,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "hook":
         payload = sys.stdin.buffer.read(MAX_HOOK_PAYLOAD_BYTES + 1)
         try:
+            project_root = args.project_root
+            manifest_path = os.environ.get(_PROJECT_MANIFEST_ENV, "").strip()
+            if manifest_path:
+                from .management import ManagementError, resolve_hook_project
+
+                event = normalize_hook(args.host, payload)
+                managed_host = (
+                    MANAGED_HOST_CODEX
+                    if args.host == HOST_CODEX
+                    else MANAGED_HOST_CLAUDE
+                )
+                try:
+                    project_root = resolve_hook_project(
+                        project_manifest=manifest_path,
+                        host=managed_host,
+                        event_cwd=event.cwd,
+                        register=event.kind == "user_prompt",
+                    )
+                except (ManagementError, ProjectPathError):
+                    print(
+                        diagnostic_line(
+                            event.event_id,
+                            "project_registration_failed",
+                        ),
+                        file=sys.stderr,
+                    )
+                    return 1
+                if project_root is None:
+                    return 0
             result = handle_hook(
                 args.host,
                 payload,
                 args.model_command,
-                project_root=args.project_root,
+                project_root=project_root,
             )
         except HookError as error:
             print(error.diagnostic(), file=sys.stderr)

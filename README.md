@@ -27,19 +27,20 @@ sessions—without storing full prompts by default.
 - Lightweight journal: `.context-compactor/events.sqlite`.
 - Codex `SessionStart` injection matches `startup` only and never enqueues work
   or launches the model worker.
+- A global Codex Hook resolves the project from each event payload's working
+  directory. Project-local Hooks take precedence over the inherited global Hook.
 
 ## Windows one-command install or update
 
-Open PowerShell in the root of the coding project where the Hook should run.
 Windows PowerShell 5.1+, Git, Python 3.9+, and a signed-in Codex CLI are
-required. Run this same command for both the first installation and every
-later update:
+required. Run this command from any directory for both the first installation
+and every later update:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.2.0/scripts/bootstrap.ps1')))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.0/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetEnvironmentVariable('USERPROFILE'))"
 ```
 
-The command loads a version-pinned bootstrap from the `v3.2.0` release tag.
+The command loads a version-pinned bootstrap from the `v3.3.0` release tag.
 That bootstrap downloads the latest public stable release from this repository,
 checks the repository download URL, release tag, and source version, then runs
 the idempotent source installer. Temporary download files are removed when it
@@ -52,10 +53,20 @@ During the run, cyan `[1/4]`–`[4/4]` messages show progress. A green
 to date. The installer JSON remains available through `scripts/install.ps1`
 for automation but is no longer printed by the one-command bootstrap.
 
-After success, start Codex from that same project directory. If PowerShell
-blocks the npm `codex.ps1` wrapper, use `codex.cmd`. Approve the project Hook
-if Codex asks for trust. The managed `SessionStart` Hook runs only for
-`startup`; normal prompts are handled by the background memory worker.
+This command creates or updates the global Codex Hook in the current Windows
+user's home directory. Afterwards, when Codex starts in any coding project,
+the global Hook uses the event `cwd`; the first `UserPromptSubmit` automatically
+registers that project, so you do not need to reinstall for every project.
+`SessionStart` can read existing state for its event `cwd`, but does not register
+a project. Multiple Codex sessions in the same project share one manifest,
+state directory, and `events.sqlite` journal; a registry lock prevents duplicate
+registration. A project-local Hook takes precedence when one exists. If you
+intentionally run the source installer with a project root, it creates a
+project-local Hook.
+
+If PowerShell blocks the npm `codex.ps1` wrapper, use `codex.cmd`. Approve the
+global Hook only if Codex asks for trust. The managed `SessionStart` Hook runs
+only for `startup`; normal prompts are handled by the background memory worker.
 
 ### Source-tree management
 
@@ -76,9 +87,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -A
 ```
 
 The source installer supports `AgentHost` values `codex`, `claude`, and
-`all`. Install/update removes only V2 Hook handlers exactly recorded by a
-recognized V2 manifest. It preserves the manifest, legacy `context.db`,
-project state, and unrelated user Hooks.
+`all`. Install and update preserve existing project state and unrelated user
+Hooks.
 
 To use an external adapter instead, add an override such as:
 
@@ -102,19 +112,10 @@ The external adapter must implement `context-compactor/model/v1`:
 - Unknown new secret formats are not guaranteed to be detected.
 - See [docs/PRIVACY.md](docs/PRIVACY.md).
 
-## Legacy migration
-
-```
-python -m context_compactor migrate preview --project-root .
-python -m context_compactor migrate apply --project-root .
-```
-
-The migration reads legacy `.context-compactor/context.db` and never modifies or deletes the original database.
-
 ## Verification
 
 - `python -B -m unittest discover -s tests`
-- Evidence: 79 tests ran successfully, including 2 environment-dependent skips.
+- Evidence: 82 tests ran successfully, including 2 environment-dependent skips.
 - Benchmarks: [docs/benchmark-report-v3-2026-07-31.zh-TW.md](docs/benchmark-report-v3-2026-07-31.zh-TW.md)
 - Live signed-in Codex CLI runs with `gpt-5.6-sol` and `high` reasoning effort.
 
@@ -137,6 +138,8 @@ python -B scripts/benchmark_v3.py --stage endurance `
 - These are observed input-token reductions in the deterministic benchmark
   scenario, not a guarantee of every live turn or billed-cost savings.
 - Gates passed: correctness, privacy, state-budget, failed-candidate-corruption.
+- v3.3.0 does not rerun the token benchmark because its runtime compression
+  logic is unchanged.
 
 ## License
 

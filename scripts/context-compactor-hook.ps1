@@ -59,8 +59,27 @@ try {
     )
     $arguments += $modelCommand
 
-    & $python @arguments
-    exit $LASTEXITCODE
+    $manifestEnvironmentName = "CONTEXT_COMPACTOR_PROJECT_MANIFEST"
+    $previousManifest = [Environment]::GetEnvironmentVariable(
+        $manifestEnvironmentName,
+        "Process"
+    )
+    try {
+        [Environment]::SetEnvironmentVariable(
+            $manifestEnvironmentName,
+            $manifestPath,
+            "Process"
+        )
+        & $python @arguments
+        $hookExitCode = $LASTEXITCODE
+    } finally {
+        [Environment]::SetEnvironmentVariable(
+            $manifestEnvironmentName,
+            $previousManifest,
+            "Process"
+        )
+    }
+    exit $hookExitCode
 } catch {
     [Console]::Error.WriteLine("context-compactor: Hook launcher failed.")
     exit 1

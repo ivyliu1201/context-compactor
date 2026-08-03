@@ -7,6 +7,47 @@ public release.
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-08-03
+
+### Added
+
+- Added cwd-aware global Codex Hook registration: the first `UserPromptSubmit`
+  for a project registers that event working directory without requiring a
+  per-project reinstall.
+- Added shared project registration protection so concurrent Codex sessions
+  use one manifest, state directory, and `events.sqlite` journal without
+  duplicate registry entries.
+
+### Changed
+
+- Global Hook execution now resolves the project from every event payload's
+  `cwd`. `SessionStart` can read existing project state but does not register a
+  new project.
+- Project-local Hooks take precedence over inherited global Hooks. Removing a
+  global owner removes only its inherited registrations and preserves local
+  project data and Hooks.
+- The Hook wrapper temporarily provides the managed project manifest to the
+  Python Hook and restores the environment afterwards.
+- Corrected one-command bootstrap results so they accurately distinguish
+  `Installed`, `Updated`, and `Already up to date`, while keeping the
+  machine-readable `scripts/install.ps1` JSON interface unchanged.
+- Updated both READMEs for the current global Hook architecture and pinned the
+  documented one-command entry point to the `v3.3.0` tag.
+
+### Breaking Changes
+
+None.
+
+### Verification
+
+- The complete Python suite passed 82 tests with 2 environment-dependent skips.
+- Core global Hook, event-cwd selection, multi-session journal, and bootstrap
+  install/update/already-current tests passed.
+- Python AST and PowerShell parser checks passed, as did `git diff --check`.
+- Isolated Windows-profile validation confirmed global installation and that
+  three concurrent `UserPromptSubmit` events for one other cwd create one
+  manifest and registry entry while sharing one `events.sqlite` journal.
+
 ## [3.2.0] - 2026-08-02
 
 ### Changed

@@ -10,9 +10,10 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Iterator, Mapping, Optional, Sequence, Tuple
 
 from . import __version__
 from .journal import SCHEMA_VERSION as JOURNAL_SCHEMA_VERSION
@@ -33,6 +34,9 @@ HOOK_EVENTS = (
     "PostCompact",
 )
 HOOK_TIMEOUT_SECONDS = 30
+_HOOK_SCOPE_PROJECT = "project"
+_HOOK_SCOPE_GLOBAL = "global"
+_HOOK_SCOPE_INHERITED = "global_inherited"
 WORKER_NOT_RUNNING_THRESHOLD = timedelta(seconds=30)
 
 _HOST_EXECUTABLES = {
@@ -219,6 +223,227 @@ def doctor(
     return report
 
 
+def resolve_hook_project(
+    *,
+    project_manifest: PathValue,
+    host: str,
+    event_cwd: PathValue,
+    register: bool,
+    now: Optional[datetime] = None,
+) -> Optional[Path]:
+    selected = _normalize_hosts((host,))
+    if len(selected) != 1:
+        raise ManagementError("Hook project resolution requires one Host")
+
+    manifest_path = Path(project_manifest).resolve(strict=False)
+    owner_manifest = _load_manifest(manifest_path, "project")
+    owner_root = resolve_project_root(
+        str(owner_manifest.get("project_root", ""))
+    )
+    installation = _resolve_install_root(
+        str(owner_manifest.get("install_root", ""))
+    )
+    _validate_project_manifest(owner_manifest, owner_root, installation)
+
+    owner_id = _project_id(owner_root)
+    expected_owner_path = (
+        installation / "projects" / f"{owner_id}.json"
+    )
+    if not _same_path(manifest_path, expected_owner_path):
+        raise ManagementError("project manifest path is invalid")
+
+    global_path = installation / "install.json"
+    global_manifest = _load_manifest(global_path, "install")
+    _validate_install_root(global_manifest, installation)
+    projects = dict(_project_registry(global_manifest))
+    registered_owner = projects.get(owner_id)
+    if not isinstance(registered_owner, str) or not _same_path(
+        registered_owner,
+        manifest_path,
+    ):
+        raise ManagementError("project manifest is not registered")
+
+    owner_hosts = _host_definitions(owner_manifest)
+    owner_definition = owner_hosts.get(host)
+    if not isinstance(owner_definition, dict):
+        raise ManagementError(f"{host} is not installed for this project")
+    if _hook_scope(owner_definition) != _HOOK_SCOPE_GLOBAL:
+        return owner_root
+    if host != HOST_CODEX:
+        raise ManagementError("global Hook dispatch is unsupported")
+
+    target_root = resolve_project_root(event_cwd)
+    if _same_path(target_root, owner_root):
+        return owner_root
+
+    target_id = _project_id(target_root)
+    target_path = installation / "projects" / f"{target_id}.json"
+    if not register:
+        _, has_local_hook = _load_global_hook_target(
+            target_path=target_path,
+            target_root=target_root,
+            installation=installation,
+            host=host,
+            owner_id=owner_id,
+        )
+        if has_local_hook:
+            return None
+        return target_root
+
+    with _registry_lock(installation):
+        return _register_global_hook_project(
+            global_path=global_path,
+            owner_manifest_path=manifest_path,
+            owner_root=owner_root,
+            target_path=target_path,
+            target_root=target_root,
+            host=host,
+            now=now,
+        )
+
+
+def _load_global_hook_target(
+    *,
+    target_path: Path,
+    target_root: Path,
+    installation: Path,
+    host: str,
+    owner_id: str,
+) -> Tuple[Optional[dict[str, object]], bool]:
+    current_target = _load_optional_manifest(target_path, "project")
+    if current_target is None:
+        return None, False
+
+    _validate_project_manifest(
+        current_target,
+        target_root,
+        installation,
+    )
+    current_definition = _host_definitions(current_target).get(host)
+    if current_definition is None:
+        return current_target, False
+    if not isinstance(current_definition, dict):
+        raise ManagementError("project manifest Host is invalid")
+
+    current_scope = _hook_scope(current_definition)
+    if current_scope == _HOOK_SCOPE_PROJECT:
+        return current_target, True
+    if (
+        current_scope != _HOOK_SCOPE_INHERITED
+        or current_definition.get("owner_project_id") != owner_id
+    ):
+        raise ManagementError("inherited global Hook ownership is invalid")
+    return current_target, False
+
+
+def _register_global_hook_project(
+    *,
+    global_path: Path,
+    owner_manifest_path: Path,
+    owner_root: Path,
+    target_path: Path,
+    target_root: Path,
+    host: str,
+    now: Optional[datetime],
+) -> Optional[Path]:
+    installation = global_path.parent
+    global_manifest = _load_manifest(global_path, "install")
+    _validate_install_root(global_manifest, installation)
+    projects = dict(_project_registry(global_manifest))
+
+    owner_id = _project_id(owner_root)
+    expected_owner_path = installation / "projects" / f"{owner_id}.json"
+    if not _same_path(owner_manifest_path, expected_owner_path):
+        raise ManagementError("project manifest path is invalid")
+    registered_owner = projects.get(owner_id)
+    if not isinstance(registered_owner, str) or not _same_path(
+        registered_owner,
+        owner_manifest_path,
+    ):
+        raise ManagementError("project manifest is not registered")
+
+    owner_manifest = _load_manifest(owner_manifest_path, "project")
+    _validate_project_manifest(owner_manifest, owner_root, installation)
+    owner_definition = _host_definitions(owner_manifest).get(host)
+    if (
+        not isinstance(owner_definition, dict)
+        or _hook_scope(owner_definition) != _HOOK_SCOPE_GLOBAL
+    ):
+        raise ManagementError("global Hook owner is invalid")
+
+    target_id = _project_id(target_root)
+    expected_target_path = installation / "projects" / f"{target_id}.json"
+    if not _same_path(target_path, expected_target_path):
+        raise ManagementError("project manifest path is invalid")
+    current_target, has_local_hook = _load_global_hook_target(
+        target_path=target_path,
+        target_root=target_root,
+        installation=installation,
+        host=host,
+        owner_id=owner_id,
+    )
+    if has_local_hook:
+        return None
+
+    timestamp = _format_time(_as_utc(now or datetime.now(timezone.utc)))
+    inherited_definition = dict(owner_definition)
+    inherited_definition.update(
+        {
+            "hook_scope": _HOOK_SCOPE_INHERITED,
+            "owner_project_id": owner_id,
+            "config_created": False,
+        }
+    )
+
+    candidate = dict(
+        current_target
+        or {
+            "schema_version": MANIFEST_VERSION,
+            "project_id": target_id,
+            "project_root": str(target_root),
+            "install_root": str(installation),
+            "hosts": {},
+            "installed_at": timestamp,
+        }
+    )
+    target_hosts = dict(_host_definitions(candidate))
+    target_hosts[host] = inherited_definition
+    candidate.update(
+        {
+            "schema_version": MANIFEST_VERSION,
+            "project_id": target_id,
+            "project_root": str(target_root),
+            "install_root": str(installation),
+            "python_interpreter": str(
+                owner_manifest.get("python_interpreter", "")
+            ),
+            "model_command": _manifest_model_command(owner_manifest),
+            "model_adapter": str(
+                owner_manifest.get("model_adapter", "external")
+            ),
+            "hosts": target_hosts,
+        }
+    )
+
+    changes: dict[Path, Optional[bytes]] = {}
+    if current_target is None or candidate != current_target:
+        candidate["updated_at"] = timestamp
+        changes[target_path] = _json_bytes(candidate)
+
+    if not isinstance(projects.get(target_id), str) or not _same_path(
+        projects.get(target_id, ""),
+        target_path,
+    ):
+        projects[target_id] = str(target_path)
+        updated_global = dict(global_manifest)
+        updated_global["projects"] = projects
+        changes[global_path] = _json_bytes(updated_global)
+
+    if changes:
+        _apply_file_changes(changes)
+    return target_root
+
+
 def uninstall(
     *,
     project_root: PathValue,
@@ -235,30 +460,56 @@ def uninstall(
     project_id = _project_id(root)
     project_path = installation / "projects" / f"{project_id}.json"
     project_manifest = _load_manifest(project_path, "project")
-    if Path(str(project_manifest.get("project_root", ""))) != root:
-        raise ManagementError("project manifest does not match the project root")
+    _validate_project_manifest(project_manifest, root, installation)
 
     installed_hosts = _host_definitions(project_manifest)
     changes: dict[Path, Optional[bytes]] = {}
     hook_reports = []
+    auto_projects_removed = 0
     for host in selected:
         definition = installed_hosts.get(host)
         if not isinstance(definition, dict):
             raise ManagementError(f"{host} is not installed for this project")
-        config_path = _host_config_path(root, host)
-        if Path(str(definition.get("config_path", ""))) != config_path:
-            raise ManagementError(f"{host} Hook configuration path is invalid")
-        document, _ = _load_hook_document(config_path)
-        counts = _count_owned_hooks(document, definition)
-        if any(counts[event] != 1 for event in HOOK_EVENTS):
-            raise ManagementError(
-                f"{host} Hook definition changed; refusing ambiguous uninstall"
+        scope = _hook_scope(definition)
+        if scope == _HOOK_SCOPE_INHERITED:
+            effective_definition = _inherited_owner_definition(
+                global_manifest,
+                installation,
+                host,
+                definition,
             )
-        _remove_owned_hooks(document, definition)
-        if bool(definition.get("config_created")) and not document:
-            changes[config_path] = None
+            config_path = Path(
+                str(effective_definition.get("config_path", ""))
+            )
         else:
-            changes[config_path] = _json_bytes(document)
+            config_path = _host_config_path(root, host)
+            if not _same_path(
+                str(definition.get("config_path", "")),
+                config_path,
+            ):
+                raise ManagementError(
+                    f"{host} Hook configuration path is invalid"
+                )
+            document, _ = _load_hook_document(config_path)
+            counts = _count_owned_hooks(document, definition)
+            if any(counts[event] != 1 for event in HOOK_EVENTS):
+                raise ManagementError(
+                    f"{host} Hook definition changed; "
+                    "refusing ambiguous uninstall"
+                )
+            _remove_owned_hooks(document, definition)
+            if bool(definition.get("config_created")) and not document:
+                changes[config_path] = None
+            else:
+                changes[config_path] = _json_bytes(document)
+            if scope == _HOOK_SCOPE_GLOBAL:
+                auto_projects_removed += _remove_inherited_project_hosts(
+                    global_manifest,
+                    installation,
+                    project_id,
+                    host,
+                    changes,
+                )
         del installed_hosts[host]
         hook_reports.append(
             {
@@ -301,6 +552,7 @@ def uninstall(
         "hooks": hook_reports,
         "installation_removed": installation_removed,
         "cleanup_deferred": cleanup_deferred,
+        "auto_projects_removed": auto_projects_removed,
     }
 
 
@@ -483,6 +735,8 @@ def _install_or_update(
             "command_windows": command_windows,
             "config_created": config_created,
         }
+        if host == HOST_CODEX and _is_global_codex_root(root):
+            definition["hook_scope"] = _HOOK_SCOPE_GLOBAL
         _add_owned_hooks(document, host, definition)
         installed_hosts[host] = definition
         changes[config_path] = _json_bytes(document)
@@ -561,6 +815,8 @@ def _collect_status(
     )
     try:
         project_manifest = _load_optional_manifest(project_path, "project")
+        if project_manifest is not None:
+            _validate_project_manifest(project_manifest, root, installation)
     except ManagementError:
         project_manifest = None
         issues.append("project_manifest_invalid")
@@ -608,17 +864,57 @@ def _collect_status(
     hook_reports = []
     for host in selected:
         definition = installed_hosts.get(host)
+        effective_definition = definition
         hook_issues = []
         counts = {event: 0 for event in HOOK_EVENTS}
         document = None
+        inherited = False
         if isinstance(definition, dict):
-            config_path = _host_config_path(root, host)
-            if Path(str(definition.get("config_path", ""))) != config_path:
-                hook_issues.append("hook_config_path_mismatch")
+            try:
+                scope = _hook_scope(definition)
+            except ManagementError:
+                scope = _HOOK_SCOPE_PROJECT
+                hook_issues.append("hook_definition_invalid")
+            if scope == _HOOK_SCOPE_INHERITED:
+                inherited = True
+                try:
+                    if global_manifest is None:
+                        raise ManagementError(
+                            "install manifest is unavailable"
+                        )
+                    effective_definition = _inherited_owner_definition(
+                        global_manifest,
+                        installation,
+                        host,
+                        definition,
+                    )
+                    config_path = Path(
+                        str(
+                            effective_definition.get(
+                                "config_path",
+                                "",
+                            )
+                        )
+                    )
+                except ManagementError:
+                    config_path = Path(
+                        str(definition.get("config_path", ""))
+                    )
+                    hook_issues.append("hook_inheritance_invalid")
             else:
+                config_path = _host_config_path(root, host)
+                if not _same_path(
+                    str(definition.get("config_path", "")),
+                    config_path,
+                ):
+                    hook_issues.append("hook_config_path_mismatch")
+            if not hook_issues and isinstance(effective_definition, dict):
                 try:
                     document, _ = _load_hook_document(config_path)
-                    counts = _count_owned_hooks(document, definition)
+                    counts = _count_owned_hooks(
+                        document,
+                        effective_definition,
+                    )
                     if (
                         host == HOST_CLAUDE
                         and document.get("disableAllHooks") is True
@@ -626,25 +922,30 @@ def _collect_status(
                         hook_issues.append("hooks_disabled")
                 except ManagementError:
                     hook_issues.append("hook_config_invalid")
-            definition_mismatch = any(
-                counts[event] != 1 for event in HOOK_EVENTS
-            )
-            if (
-                host == HOST_CODEX
-                and document is not None
-                and _count_codex_startup_hooks(document, definition) != 1
-            ):
-                definition_mismatch = True
-            if definition_mismatch:
-                hook_issues.append("hook_definition_mismatch")
+                definition_mismatch = any(
+                    counts[event] != 1 for event in HOOK_EVENTS
+                )
+                if (
+                    host == HOST_CODEX
+                    and document is not None
+                    and _count_codex_startup_hooks(
+                        document,
+                        effective_definition,
+                    )
+                    != 1
+                ):
+                    definition_mismatch = True
+                if definition_mismatch:
+                    hook_issues.append("hook_definition_mismatch")
         else:
             config_path = _host_config_path(root, host)
         installed = isinstance(definition, dict)
         definition_healthy = installed and not hook_issues
+        manual_trust_required = host == HOST_CODEX and not inherited
         hook_state = "not_installed"
         if installed and not definition_healthy:
             hook_state = "unhealthy"
-        elif installed and host == HOST_CODEX:
+        elif installed and manual_trust_required:
             hook_state = "awaiting_manual_trust"
         elif installed:
             hook_state = "definition_ready"
@@ -654,7 +955,7 @@ def _collect_status(
                 "installed": installed,
                 "definition_healthy": definition_healthy,
                 "state": hook_state,
-                "manual_trust_required": host == HOST_CODEX,
+                "manual_trust_required": manual_trust_required,
                 "host_activation_unknown": installed,
                 "host_available": _executable_available(
                     _HOST_EXECUTABLES[host], which
@@ -662,13 +963,13 @@ def _collect_status(
                 "model_available": model_available,
                 "config_path": str(config_path),
                 "command": (
-                    str(definition.get("command", ""))
-                    if isinstance(definition, dict)
+                    str(effective_definition.get("command", ""))
+                    if isinstance(effective_definition, dict)
                     else ""
                 ),
                 "command_windows": (
-                    str(definition.get("command_windows", ""))
-                    if isinstance(definition, dict)
+                    str(effective_definition.get("command_windows", ""))
+                    if isinstance(effective_definition, dict)
                     else ""
                 ),
                 "events": counts,
@@ -1066,6 +1367,204 @@ def _validate_model_command(
     return tuple(command)
 
 
+def _manifest_model_command(
+    manifest: Mapping[str, object],
+) -> list[str]:
+    value = manifest.get("model_command")
+    if not isinstance(value, list) or not value:
+        raise ManagementError("project manifest model command is invalid")
+    if any(
+        not isinstance(argument, str) or not argument
+        for argument in value
+    ):
+        raise ManagementError("project manifest model command is invalid")
+    return list(value)
+
+
+def _validate_project_manifest(
+    manifest: Mapping[str, object],
+    project_root: Path,
+    installation: Path,
+) -> None:
+    if manifest.get("schema_version") != MANIFEST_VERSION:
+        raise ManagementError("project manifest version is unsupported")
+    if manifest.get("project_id") != _project_id(project_root):
+        raise ManagementError("project manifest identity is invalid")
+    if not _same_path(
+        str(manifest.get("project_root", "")),
+        project_root,
+    ):
+        raise ManagementError("project manifest does not match the project root")
+    if not _same_path(
+        str(manifest.get("install_root", "")),
+        installation,
+    ):
+        raise ManagementError("project manifest install root is invalid")
+    _host_definitions(manifest)
+
+
+def _hook_scope(definition: Mapping[str, object]) -> str:
+    value = definition.get("hook_scope", _HOOK_SCOPE_PROJECT)
+    if value not in {
+        _HOOK_SCOPE_PROJECT,
+        _HOOK_SCOPE_GLOBAL,
+        _HOOK_SCOPE_INHERITED,
+    }:
+        raise ManagementError("Hook scope is invalid")
+    return str(value)
+
+
+def _is_global_codex_root(project_root: Path) -> bool:
+    try:
+        return _same_path(project_root, Path.home())
+    except (OSError, RuntimeError):
+        return False
+
+
+def _same_path(left: PathValue, right: PathValue) -> bool:
+    try:
+        left_path = Path(left).resolve(strict=False)
+        right_path = Path(right).resolve(strict=False)
+    except (OSError, TypeError, ValueError):
+        return False
+    return os.path.normcase(str(left_path)) == os.path.normcase(
+        str(right_path)
+    )
+
+
+@contextmanager
+def _registry_lock(installation: Path) -> Iterator[None]:
+    lock_path = installation / ".registry.lock"
+    stream = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        stream = lock_path.open("a+b")
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+            os.fsync(stream.fileno())
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+    except OSError as error:
+        if stream is not None:
+            stream.close()
+        raise ManagementError(
+            "project registry lock is unavailable"
+        ) from error
+
+    try:
+        yield
+    finally:
+        try:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        except OSError as error:
+            raise ManagementError(
+                "project registry lock is unavailable"
+            ) from error
+        finally:
+            stream.close()
+
+
+def _inherited_owner_definition(
+    global_manifest: Mapping[str, object],
+    installation: Path,
+    host: str,
+    definition: Mapping[str, object],
+) -> dict[str, object]:
+    if _hook_scope(definition) != _HOOK_SCOPE_INHERITED:
+        raise ManagementError("Hook definition is not inherited")
+    owner_id = definition.get("owner_project_id")
+    if not isinstance(owner_id, str) or not owner_id:
+        raise ManagementError("inherited global Hook owner is invalid")
+
+    projects = _project_registry(global_manifest)
+    owner_reference = projects.get(owner_id)
+    expected_path = installation / "projects" / f"{owner_id}.json"
+    if not isinstance(owner_reference, str) or not _same_path(
+        owner_reference,
+        expected_path,
+    ):
+        raise ManagementError("inherited global Hook owner is unavailable")
+
+    owner_manifest = _load_manifest(expected_path, "project")
+    owner_root = Path(
+        str(owner_manifest.get("project_root", ""))
+    ).resolve(strict=False)
+    _validate_project_manifest(owner_manifest, owner_root, installation)
+    if _project_id(owner_root) != owner_id:
+        raise ManagementError("inherited global Hook owner is invalid")
+
+    owner_definition = _host_definitions(owner_manifest).get(host)
+    if (
+        not isinstance(owner_definition, dict)
+        or _hook_scope(owner_definition) != _HOOK_SCOPE_GLOBAL
+    ):
+        raise ManagementError("inherited global Hook owner is invalid")
+    if not _same_path(
+        str(definition.get("config_path", "")),
+        str(owner_definition.get("config_path", "")),
+    ):
+        raise ManagementError("inherited global Hook path is invalid")
+    return owner_definition
+
+
+def _remove_inherited_project_hosts(
+    global_manifest: dict[str, object],
+    installation: Path,
+    owner_id: str,
+    host: str,
+    changes: dict[Path, Optional[bytes]],
+) -> int:
+    projects = dict(_project_registry(global_manifest))
+    removed = 0
+    for project_id, reference in tuple(projects.items()):
+        if project_id == owner_id:
+            continue
+        expected_path = installation / "projects" / f"{project_id}.json"
+        if not isinstance(reference, str) or not _same_path(
+            reference,
+            expected_path,
+        ):
+            raise ManagementError("registered project manifest path is invalid")
+        manifest = _load_manifest(expected_path, "project")
+        project_root = Path(
+            str(manifest.get("project_root", ""))
+        ).resolve(strict=False)
+        _validate_project_manifest(manifest, project_root, installation)
+        hosts = dict(_host_definitions(manifest))
+        definition = hosts.get(host)
+        if not isinstance(definition, dict):
+            continue
+        if (
+            _hook_scope(definition) != _HOOK_SCOPE_INHERITED
+            or definition.get("owner_project_id") != owner_id
+        ):
+            continue
+        del hosts[host]
+        removed += 1
+        if hosts:
+            updated = dict(manifest)
+            updated["hosts"] = hosts
+            changes[expected_path] = _json_bytes(updated)
+        else:
+            changes[expected_path] = None
+            projects.pop(project_id, None)
+    global_manifest["projects"] = projects
+    return removed
+
+
 def _host_config_path(project_root: Path, host: str) -> Path:
     if host == HOST_CODEX:
         return project_root / ".codex" / "hooks.json"
@@ -1444,6 +1943,8 @@ def _remove_managed_installation(
             shutil.rmtree(directory)
     wrapper = installation / "context-compactor-hook.ps1"
     wrapper.unlink(missing_ok=True)
+    registry_lock = installation / ".registry.lock"
+    registry_lock.unlink(missing_ok=True)
     try:
         installation.rmdir()
     except OSError:

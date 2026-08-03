@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -385,6 +386,146 @@ class HostTests(unittest.TestCase):
                 "context-compactor event_id=unknown category=invalid_payload",
             )
             self.assertNotIn(synthetic_secret, diagnostic)
+
+    def test_multiple_sessions_share_one_project_journal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = RecordingLauncher()
+            results = []
+            for index in range(3):
+                results.append(
+                    handle_hook(
+                        HOST_CODEX,
+                        codex_payload(
+                            "UserPromptSubmit",
+                            session_id=f"session-{index}",
+                            turn_id="turn-1",
+                            prompt=f"remember project decision {index}",
+                        ),
+                        ("model-command",),
+                        project_root=root,
+                        received_at=NOW + timedelta(seconds=index),
+                        launcher=launcher,
+                    )
+                )
+
+            self.assertTrue(all(result.enqueued for result in results))
+            self.assertEqual(
+                [Path(call[0]).resolve() for call in launcher.calls],
+                [root.resolve()] * 3,
+            )
+            paths = project_paths(root)
+            self.assertTrue(paths.data_dir.is_dir())
+            connection = sqlite3.connect(str(paths.journal))
+            try:
+                event_count = connection.execute(
+                    "SELECT COUNT(*) FROM events"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(event_count, 3)
+
+    def test_hook_cli_uses_global_manifest_to_select_event_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            owner = temporary / "profile"
+            owner.mkdir()
+            target = temporary / "project"
+            target.mkdir()
+            installation = temporary / "install"
+            projects = installation / "projects"
+            projects.mkdir(parents=True)
+
+            owner_root = owner.resolve()
+            owner_id = hashlib.sha256(
+                os.path.normcase(str(owner_root)).encode("utf-8")
+            ).hexdigest()
+            owner_manifest_path = projects / f"{owner_id}.json"
+            owner_manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "project_id": owner_id,
+                        "project_root": str(owner_root),
+                        "install_root": str(installation.resolve()),
+                        "python_interpreter": sys.executable,
+                        "model_command": ["unused-model"],
+                        "model_adapter": "external",
+                        "hosts": {
+                            "codex": {
+                                "hook_scope": "global",
+                                "config_path": str(
+                                    owner_root / ".codex" / "hooks.json"
+                                ),
+                                "command": "unused-command",
+                                "command_windows": "unused-command",
+                                "config_created": True,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (installation / "install.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "install_root": str(installation.resolve()),
+                        "projects": {
+                            owner_id: str(owner_manifest_path.resolve())
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            publish_state(
+                target,
+                ProjectState(
+                    current_focus="Use the event cwd project.",
+                ),
+            )
+
+            source_root = Path(__file__).resolve().parent.parent
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "CONTEXT_COMPACTOR_PROJECT_MANIFEST": str(
+                        owner_manifest_path
+                    ),
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                }
+            )
+            completed = subprocess.run(
+                (
+                    sys.executable,
+                    "-m",
+                    "context_compactor",
+                    "hook",
+                    "--host",
+                    HOST_CODEX,
+                    "--project-root",
+                    str(owner),
+                    "--model-command",
+                    "unused-model",
+                ),
+                cwd=str(source_root),
+                env=environment,
+                input=codex_payload(
+                    EVENT_SESSION_START,
+                    cwd=str(target),
+                    source="startup",
+                ),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            decoded = json.loads(completed.stdout)
+            context = decoded["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("Use the event cwd project.", context)
+            self.assertEqual(len(tuple(projects.glob("*.json"))), 1)
 
 
 if __name__ == "__main__":
