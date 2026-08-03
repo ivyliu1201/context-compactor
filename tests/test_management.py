@@ -19,6 +19,7 @@ from context_compactor.journal import EnqueueRequest, Journal, digest_text
 from context_compactor.management import (
     HOOK_EVENTS,
     ManagementError,
+    _validate_python,
     doctor,
     install_source,
     resolve_hook_project,
@@ -87,6 +88,64 @@ def _request(index: int, enqueued_at: datetime) -> EnqueueRequest:
 
 
 class ManagementTests(unittest.TestCase):
+    def test_python_validation_uses_runtime_behind_windows_app_alias(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            alias = (
+                temporary
+                / "Microsoft"
+                / "WindowsApps"
+                / "python.exe"
+            )
+            alias.parent.mkdir(parents=True)
+            alias.write_text("", encoding="utf-8")
+            actual = Path(sys.executable).resolve(strict=True)
+            original_resolve = Path.resolve
+
+            def resolve_with_blocked_alias(
+                path: Path,
+                strict: bool = False,
+            ) -> Path:
+                if os.path.normcase(str(path)) == os.path.normcase(str(alias)):
+                    raise OSError(
+                        1920,
+                        "The file cannot be accessed by the system",
+                    )
+                return original_resolve(path, strict=strict)
+
+            probe = subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "executable": str(actual),
+                        "version": [
+                            sys.version_info.major,
+                            sys.version_info.minor,
+                        ],
+                    }
+                ),
+                stderr="",
+            )
+            with (
+                patch(
+                    "context_compactor.management.Path.resolve",
+                    new=resolve_with_blocked_alias,
+                ),
+                patch(
+                    "context_compactor.management._run_checked",
+                    return_value=probe,
+                ),
+            ):
+                resolved = _validate_python(
+                    "python",
+                    lambda _name: str(alias),
+                )
+
+            self.assertEqual(resolved, actual)
+
     @unittest.skipUnless(
         os.name == "nt"
         and shutil.which("powershell.exe") is not None
@@ -396,7 +455,12 @@ class ManagementTests(unittest.TestCase):
             command = """
 function Invoke-RestMethod {
     [CmdletBinding()]
-    param([string]$Uri, $Headers, [string]$Method)
+    param(
+        [string]$Uri,
+        $Headers,
+        [string]$Method,
+        [int]$TimeoutSec
+    )
     if ($Uri -eq 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.2.0/scripts/bootstrap.ps1') {
         return Get-Content -Raw -Encoding UTF8 $env:CC_BOOTSTRAP
     }
@@ -416,7 +480,8 @@ function Invoke-WebRequest {
         [string]$Uri,
         $Headers,
         [switch]$UseBasicParsing,
-        [string]$OutFile
+        [string]$OutFile,
+        [int]$TimeoutSec
     )
     $expected = 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/' + $env:CC_RELEASE_TAG
     if ($Uri -ne $expected) {
@@ -551,6 +616,13 @@ function Invoke-WebRequest {
             temporary = Path(directory)
             project = temporary / "project"
             project.mkdir()
+            tools = temporary / "tools"
+            tools.mkdir()
+            for name in ("git.cmd", "codex.cmd"):
+                (tools / name).write_text(
+                    "@exit /b 0\r\n",
+                    encoding="ascii",
+                )
             environment = os.environ.copy()
             environment.update(
                 {
@@ -558,12 +630,20 @@ function Invoke-WebRequest {
                         SOURCE_ROOT / "scripts" / "bootstrap.ps1"
                     ),
                     "CC_PROJECT_ROOT": str(project),
+                    "CC_PYTHON": sys.executable,
+                    "LOCALAPPDATA": str(temporary / "local"),
+                    "PATH": str(tools),
                 }
             )
             command = """
 function Invoke-RestMethod {
     [CmdletBinding()]
-    param([string]$Uri, $Headers, [string]$Method)
+    param(
+        [string]$Uri,
+        $Headers,
+        [string]$Method,
+        [int]$TimeoutSec
+    )
     [pscustomobject]@{
         tag_name = 'v3.0.0'
         zipball_url = 'https://example.test/context-compactor.zip'
@@ -571,7 +651,7 @@ function Invoke-RestMethod {
         prerelease = $false
     }
 }
-& $env:CC_BOOTSTRAP -ProjectRoot $env:CC_PROJECT_ROOT
+& $env:CC_BOOTSTRAP -ProjectRoot $env:CC_PROJECT_ROOT -Python $env:CC_PYTHON
 """
             rejected = subprocess.run(
                 (
@@ -592,6 +672,157 @@ function Invoke-RestMethod {
 
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("outside the expected repository", rejected.stderr)
+
+    @unittest.skipUnless(
+        os.name == "nt" and shutil.which("powershell.exe") is not None,
+        "Windows PowerShell is required",
+    )
+    def test_powershell_bootstrap_reports_actionable_preflight_failures(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            project = temporary / "project"
+            project.mkdir()
+            tools = temporary / "tools"
+            tools.mkdir()
+            (tools / "git.cmd").write_text(
+                "@exit /b 0\r\n",
+                encoding="ascii",
+            )
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "CC_BOOTSTRAP": str(
+                        SOURCE_ROOT / "scripts" / "bootstrap.ps1"
+                    ),
+                    "CC_PROJECT_ROOT": str(project),
+                    "CC_INSTALL_ROOT": str(temporary / "install"),
+                    "CC_PYTHON": sys.executable,
+                    "LOCALAPPDATA": str(temporary / "local"),
+                    "PATH": str(tools),
+                }
+            )
+            powershell = str(shutil.which("powershell.exe"))
+            base_command = (
+                "& $env:CC_BOOTSTRAP "
+                "-ProjectRoot $env:CC_PROJECT_ROOT "
+                "-InstallDirectory $env:CC_INSTALL_ROOT "
+                "-Python $env:CC_PYTHON"
+            )
+
+            def run(command: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    (
+                        powershell,
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command",
+                        command,
+                    ),
+                    capture_output=True,
+                    check=False,
+                    cwd=project,
+                    env=environment,
+                    text=True,
+                    timeout=60,
+                )
+
+            missing = run(base_command)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("Codex CLI is unavailable", missing.stderr)
+            self.assertIn("[CHECK]", missing.stdout)
+
+            (tools / "codex.cmd").write_text(
+                "@exit /b 1\r\n",
+                encoding="ascii",
+            )
+            network_command = """
+function Invoke-RestMethod {
+    [CmdletBinding()]
+    param(
+        [string]$Uri,
+        $Headers,
+        [string]$Method,
+        [int]$TimeoutSec
+    )
+    throw 'synthetic network failure'
+}
+""" + base_command
+            signed_out = run(network_command)
+            self.assertNotEqual(signed_out.returncode, 0)
+            self.assertIn("[WARN]", signed_out.stdout)
+            self.assertIn("run 'codex login'", signed_out.stdout)
+            self.assertIn(
+                "Unable to reach the GitHub release API",
+                signed_out.stderr,
+            )
+
+            (tools / "codex.cmd").write_text(
+                "@exit /b 0\r\n",
+                encoding="ascii",
+            )
+            network = run(network_command)
+            self.assertNotEqual(network.returncode, 0)
+            self.assertNotIn("[WARN]", network.stdout)
+            self.assertIn(
+                "Unable to reach the GitHub release API",
+                network.stderr,
+            )
+
+            python_alias = tools / "python.cmd"
+            python_alias.write_text(
+                f'@echo off\r\n"{sys.executable}" %*\r\n',
+                encoding="ascii",
+            )
+            environment["CC_PYTHON_ALIAS"] = str(python_alias)
+            alias_command = network_command.replace(
+                "$env:CC_PYTHON",
+                "$env:CC_PYTHON_ALIAS",
+            )
+            alias = run(alias_command)
+            self.assertNotEqual(alias.returncode, 0)
+            self.assertIn(
+                "Unable to reach the GitHub release API",
+                alias.stderr,
+            )
+            self.assertNotIn("Python 3.9 or newer", alias.stderr)
+
+            download_command = """
+function Invoke-RestMethod {
+    [CmdletBinding()]
+    param(
+        [string]$Uri,
+        $Headers,
+        [string]$Method,
+        [int]$TimeoutSec
+    )
+    [pscustomobject]@{
+        tag_name = 'v3.3.2'
+        zipball_url = 'https://api.github.com/repos/ivyliu1201/context-compactor/zipball/v3.3.2'
+        draft = $false
+        prerelease = $false
+    }
+}
+function Invoke-WebRequest {
+    [CmdletBinding()]
+    param(
+        [string]$Uri,
+        $Headers,
+        [switch]$UseBasicParsing,
+        [string]$OutFile,
+        [int]$TimeoutSec
+    )
+    throw 'synthetic download failure'
+}
+""" + base_command
+            download = run(download_command)
+            self.assertNotEqual(download.returncode, 0)
+            self.assertIn(
+                "Unable to download the GitHub release archive",
+                download.stderr,
+            )
 
     def test_source_install_repeated_update_and_uninstall_preserve_user_hooks(
         self,

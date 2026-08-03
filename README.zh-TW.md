@@ -31,20 +31,30 @@ prompt。
 
 ## Windows 一鍵安裝或更新
 
-環境需要 Windows PowerShell 5.1+、Git、Python 3.9+，以及已登入的
-Codex CLI。可從任何目錄執行這條指令；第一次安裝與之後更新都使用同一條：
+環境需要 Windows PowerShell 5.1+、Git、Python 3.9+，以及可從 `PATH` 找到的
+Codex CLI；只有 Codex 桌面版並不足以使用此安裝程式。可從任何目錄執行這條
+指令，第一次安裝與之後更新都使用同一條；下方 code block 只有一個實體行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.1/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetEnvironmentVariable('USERPROFILE'))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.2/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetFolderPath('UserProfile'))"
 ```
 
-這條指令會先從 `v3.3.1` release tag 載入固定版本的 bootstrap。bootstrap
-再從本 repository 取得最新的公開穩定 Release，並檢查下載網址、release tag
-與來源版本，再執行可重複呼叫的 source installer；完成後會清除暫存下載檔。
-版本化來源與私有 venv 預設安裝到
+這條指令會先從 `v3.3.2` release tag 載入固定版本的 bootstrap。下載前會檢查
+project、安裝與暫存路徑，依序探測標準 Python launcher 並採用 runtime 回報的
+真實 `sys.executable`，確認 Python 3.9+、`venv` 與 pip 可用，再檢查 Git 與
+選定的 agent CLI。找不到 Codex CLI 時會停止；若 `codex login status` 無法
+確認登入，只會顯示 `[WARN]` 並繼續安裝，使用背景 context 更新前再執行
+`codex login`。
+
+bootstrap 接著從本 repository 取得最新公開穩定 Release，檢查下載網址、
+release tag 與來源版本，再執行可重複呼叫的 source installer。網路失敗訊息
+會指出需檢查 internet、DNS、proxy、TLS／憑證、rate limit 或 GitHub allowlist。
+它不會自動安裝缺少的前置工具，也不會繞過組織的 proxy、憑證或網路政策。
+完成後會清除暫存下載檔；版本化來源與私有 venv 預設安裝到
 `%LOCALAPPDATA%\context-compactor`。
 
-執行時會以青色 `[1/4]`–`[4/4]` 顯示進度；看到綠色
+執行時會先以 `[CHECK]` 檢查前置條件，`[OK] Prerequisites are ready.` 代表
+檢查通過，再以青色 `[1/4]`–`[4/4]` 顯示進度；看到綠色
 `[OK] context-compactor ... is ready.` 即代表完成，`[RESULT]` 會說明本次是
 首次安裝、已更新或已是最新版。供自動化使用的 installer JSON 仍可透過
 `scripts/install.ps1` 取得，但一鍵 bootstrap 不再直接顯示原始 JSON。
@@ -106,7 +116,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -A
 ## 驗證
 
 - `python -B -m unittest discover -s tests`
-- 驗證結果：82 測試成功執行，含 2 個依環境條件 skip 的測試。
+- 驗證結果：84 測試成功執行，含 2 個依環境條件 skip 的測試。
 - 基準報告：[docs/benchmark-report-v3-2026-07-31.zh-TW.md](docs/benchmark-report-v3-2026-07-31.zh-TW.md)
 - 使用已登入的 Codex CLI 實際執行，模型為 `gpt-5.6-sol` 且 reasoning effort 為 `high`。
 
@@ -128,7 +138,7 @@ python -B scripts/benchmark_v3.py --stage endurance `
 - 以上為確定性 benchmark 情境中實際觀測的 input-token 降幅，不保證每個
   live turn 或帳單成本都會得到相同比例。
 - 通過 correctness、privacy、state-budget、failed-candidate-corruption 各項 gate。
-- v3.3.1 未重跑 token benchmark，因為本次修正未改變 runtime compression 邏輯。
+- v3.3.2 未重跑 token benchmark，因為本次修正未改變 runtime compression 邏輯。
 
 ## 授權
 

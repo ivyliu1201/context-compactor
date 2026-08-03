@@ -7,6 +7,39 @@ public release.
 
 ## [Unreleased]
 
+## [3.3.2] - 2026-08-03
+
+### Fixed
+
+- Resolved Windows App Execution Alias launchers through the interpreter's
+  reported `sys.executable`, avoiding `WinError 1920` when
+  `WindowsApps\python.exe` can run but cannot be strictly resolved.
+- Added actionable failures for inaccessible project, install, or temporary
+  locations and for GitHub release API or archive download failures.
+
+### Changed
+
+- The Windows bootstrap now probes `py`, the configured Python command, and
+  `python3` as applicable; requires Python 3.9+ with `venv` and pip support;
+  and validates Git and the selected agent CLI before downloading.
+- A missing Codex CLI remains an installation error. An unconfirmed
+  `codex login status` now produces a warning and allows installation to
+  continue so authentication can be completed later with `codex login`.
+- Updated both READMEs to pin the one-command bootstrap to `v3.3.2` and keep
+  the complete copyable command on one physical line.
+
+### Breaking Changes
+
+None.
+
+### Verification
+
+- The complete Python suite passed 84 tests with 2 environment-dependent skips.
+- All 13 management and PowerShell integration tests passed, including
+  WindowsApps alias, prerequisite warning, network, and download failures.
+- The isolated fresh-project end-to-end test passed.
+- All 3 PowerShell scripts passed syntax parsing.
+
 ## [3.3.1] - 2026-08-03
 
 ### Fixed

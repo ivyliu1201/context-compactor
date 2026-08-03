@@ -32,26 +32,39 @@ sessions—without storing full prompts by default.
 
 ## Windows one-command install or update
 
-Windows PowerShell 5.1+, Git, Python 3.9+, and a signed-in Codex CLI are
-required. Run this command from any directory for both the first installation
-and every later update:
+Windows PowerShell 5.1+, Git, Python 3.9+, and a Codex CLI command available
+on `PATH` are required; having only the desktop app is not sufficient for this
+installer. Run this command from any directory for both the first installation
+and every later update. The code block contains one physical line:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.1/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetEnvironmentVariable('USERPROFILE'))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 'https://raw.githubusercontent.com/ivyliu1201/context-compactor/v3.3.2/scripts/bootstrap.ps1'))) -ProjectRoot ([Environment]::GetFolderPath('UserProfile'))"
 ```
 
-The command loads a version-pinned bootstrap from the `v3.3.1` release tag.
-That bootstrap downloads the latest public stable release from this repository,
-checks the repository download URL, release tag, and source version, then runs
-the idempotent source installer. Temporary download files are removed when it
-finishes. Versioned source and a private venv are installed under
-`%LOCALAPPDATA%\context-compactor` by default.
+The command loads a version-pinned bootstrap from the `v3.3.2` release tag.
+Before downloading, the bootstrap validates the project, install, and temporary
+locations; probes the standard Python launchers and uses the runtime's real
+`sys.executable`; requires Python 3.9+ with `venv` and pip support; and checks
+Git and the selected agent CLI. A missing Codex CLI stops installation. If
+`codex login status` cannot confirm authentication, the bootstrap prints a
+`[WARN]` and continues; run `codex login` before using background context
+updates.
 
-During the run, cyan `[1/4]`–`[4/4]` messages show progress. A green
-`[OK] context-compactor ... is ready.` message confirms success, and
-`[RESULT]` reports whether the project was installed, updated, or already up
-to date. The installer JSON remains available through `scripts/install.ps1`
-for automation but is no longer printed by the one-command bootstrap.
+The bootstrap then downloads the latest public stable release from this
+repository, checks the repository download URL, release tag, and source
+version, and runs the idempotent source installer. Network failures identify
+the likely internet, DNS, proxy, TLS/certificate, rate-limit, or GitHub
+allowlist checks. It does not install missing prerequisites or bypass
+organization proxy, certificate, or network policies. Temporary download files
+are removed when it finishes. Versioned source and a private venv are installed
+under `%LOCALAPPDATA%\context-compactor` by default.
+
+During the run, `[CHECK]` validates prerequisites, `[OK] Prerequisites are
+ready.` confirms them, and cyan `[1/4]`–`[4/4]` messages show progress. A green
+`[OK] context-compactor ... is ready.` message confirms success, and `[RESULT]`
+reports whether the project was installed, updated, or already up to date. The
+installer JSON remains available through `scripts/install.ps1` for automation
+but is no longer printed by the one-command bootstrap.
 
 This command creates or updates the global Codex Hook in the current Windows
 user's home directory. Afterwards, when Codex starts in any coding project,
@@ -115,7 +128,7 @@ The external adapter must implement `context-compactor/model/v1`:
 ## Verification
 
 - `python -B -m unittest discover -s tests`
-- Evidence: 82 tests ran successfully, including 2 environment-dependent skips.
+- Evidence: 84 tests ran successfully, including 2 environment-dependent skips.
 - Benchmarks: [docs/benchmark-report-v3-2026-07-31.zh-TW.md](docs/benchmark-report-v3-2026-07-31.zh-TW.md)
 - Live signed-in Codex CLI runs with `gpt-5.6-sol` and `high` reasoning effort.
 
@@ -138,7 +151,7 @@ python -B scripts/benchmark_v3.py --stage endurance `
 - These are observed input-token reductions in the deterministic benchmark
   scenario, not a guarantee of every live turn or billed-cost savings.
 - Gates passed: correctness, privacy, state-budget, failed-candidate-corruption.
-- v3.3.1 does not rerun the token benchmark because its runtime compression
+- v3.3.2 does not rerun the token benchmark because its runtime compression
   logic is unchanged.
 
 ## License

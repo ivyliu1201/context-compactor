@@ -32,13 +32,176 @@ function Write-BootstrapStatus {
     Write-Host ('[{0}] {1}' -f $Label, $Message) -ForegroundColor $Color
 }
 
+function Resolve-Application {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Candidates,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayName
+    )
+
+    foreach ($candidate in $Candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        $commands = @(
+            Get-Command -Name $candidate -CommandType Application -ErrorAction SilentlyContinue
+        )
+        foreach ($command in $commands) {
+            $source = [string]$command.Source
+            if (-not [string]::IsNullOrWhiteSpace($source)) {
+                return $source
+            }
+        }
+    }
+
+    throw "$DisplayName is unavailable or is not an executable application."
+}
+
+function Resolve-PythonInterpreter {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ConfiguredPython,
+
+        [switch]$AllowFallback
+    )
+
+    if ($AllowFallback) {
+        $candidateNames = @("py", $ConfiguredPython, "python3")
+    } else {
+        $candidateNames = @($ConfiguredPython)
+    }
+    $candidateNames = @(
+        $candidateNames |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique
+    )
+    $probeCode = (
+        "import json, sys; " +
+        "print(json.dumps({'executable': sys.executable, " +
+        "'version': [sys.version_info[0], sys.version_info[1]]}))"
+    )
+
+    foreach ($candidateName in $candidateNames) {
+        try {
+            $commandPath = Resolve-Application -Candidates @($candidateName) -DisplayName "Python"
+            $launcherArguments = @()
+            $leafName = [IO.Path]::GetFileName($commandPath)
+            if ($leafName -ieq "py" -or $leafName -ieq "py.exe") {
+                $launcherArguments += "-3"
+            }
+
+            $probeOutput = @(
+                & $commandPath @launcherArguments -c $probeCode 2>$null
+            )
+            if ($LASTEXITCODE -ne 0) {
+                continue
+            }
+            $probeLine = (
+                $probeOutput |
+                    Where-Object {
+                        -not [string]::IsNullOrWhiteSpace([string]$_)
+                    } |
+                    Select-Object -Last 1
+            )
+            $probe = ConvertFrom-Json -InputObject $probeLine
+            $versionParts = @($probe.version)
+            if ($versionParts.Count -ne 2) {
+                continue
+            }
+            $version = [Version](
+                "{0}.{1}" -f $versionParts[0], $versionParts[1]
+            )
+            if ($version -lt [Version]"3.9") {
+                continue
+            }
+
+            $executable = [IO.Path]::GetFullPath(
+                [string]$probe.executable
+            )
+            if (-not [IO.File]::Exists($executable)) {
+                continue
+            }
+            & $executable -c "import ensurepip, venv" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                continue
+            }
+            return $executable
+        } catch {
+            continue
+        }
+    }
+
+    throw (
+        "Python 3.9 or newer with venv and pip is required. " +
+        "The bootstrap tried the configured command and the standard Windows " +
+        "launchers. Install Python, enable its App Execution Alias if needed, " +
+        "reopen PowerShell, and retry."
+    )
+}
+
+function Assert-ApplicationRuns {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory = $true)]
+        [string]$FailureMessage
+    )
+
+    & $Path @Arguments *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw $FailureMessage
+    }
+}
+
+function Assert-AgentHostReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("codex", "claude")]
+        [string]$HostName
+    )
+
+    if ($HostName -eq "codex") {
+        $hostPath = Resolve-Application -Candidates @("codex.cmd", "codex.exe", "codex") -DisplayName "Codex CLI"
+        $loginReady = $false
+        try {
+            & $hostPath login status *> $null
+            $loginReady = $LASTEXITCODE -eq 0
+        } catch {
+            $loginReady = $false
+        }
+        if (-not $loginReady) {
+            Write-BootstrapStatus -Label 'WARN' -Message (
+                "Codex CLI was found, but its login status could not be " +
+                "confirmed. Installation will continue; run 'codex login' " +
+                "before using background context updates."
+            ) -Color Yellow
+        }
+        return
+    }
+
+    $hostPath = Resolve-Application -Candidates @("claude.cmd", "claude.exe", "claude") -DisplayName "Claude CLI"
+    Assert-ApplicationRuns -Path $hostPath -Arguments @("--version") -FailureMessage "Claude CLI is installed but could not run."
+}
+
 $ErrorActionPreference = "Stop"
 
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw "This bootstrap installer supports Windows only."
 }
 
-$resolvedProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
+Write-BootstrapStatus -Label 'CHECK' -Message ('Validating Python, Git, and {0}...' -f $AgentHost) -Color Cyan
+
+try {
+    $resolvedProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
+} catch {
+    throw "Project root does not exist or cannot be accessed: $ProjectRoot"
+}
 $expectedInstallDirectory = $null
 if (-not [string]::IsNullOrWhiteSpace($InstallDirectory)) {
     $expectedInstallDirectory = [IO.Path]::GetFullPath($InstallDirectory)
@@ -46,7 +209,33 @@ if (-not [string]::IsNullOrWhiteSpace($InstallDirectory)) {
     $expectedInstallDirectory = [IO.Path]::GetFullPath(
         (Join-Path $env:LOCALAPPDATA "context-compactor")
     )
+} else {
+    throw "LOCALAPPDATA is unavailable; specify -InstallDirectory."
 }
+
+try {
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+} catch {
+    throw "The Windows temporary directory is unavailable."
+}
+if (-not [IO.Directory]::Exists($temporaryRoot)) {
+    throw "The Windows temporary directory does not exist: $temporaryRoot"
+}
+
+$allowPythonFallback = -not $PSBoundParameters.ContainsKey("Python")
+$pythonPath = Resolve-PythonInterpreter -ConfiguredPython $Python -AllowFallback:$allowPythonFallback
+$gitPath = Resolve-Application -Candidates @("git.exe", "git") -DisplayName "Git"
+Assert-ApplicationRuns -Path $gitPath -Arguments @("--version") -FailureMessage "Git is installed but could not run."
+$selectedHosts = @($AgentHost)
+if ($AgentHost -eq "all") {
+    $selectedHosts = @("codex", "claude")
+}
+foreach ($selectedHost in $selectedHosts) {
+    Assert-AgentHostReady -HostName $selectedHost
+}
+
+Write-BootstrapStatus -Label 'OK' -Message 'Prerequisites are ready.' -Color Green
+
 $installationManifestExisted = (
     $null -ne $expectedInstallDirectory -and
     (Test-Path -LiteralPath (
@@ -70,10 +259,19 @@ Write-BootstrapStatus `
     -Message 'Checking the latest stable release...' `
     -Color Cyan
 
-$release = Invoke-RestMethod `
-    -Uri $releaseApi `
-    -Headers $headers `
-    -Method Get
+try {
+    $release = Invoke-RestMethod `
+        -Uri $releaseApi `
+        -Headers $headers `
+        -Method Get `
+        -TimeoutSec 30
+} catch {
+    throw (
+        "Unable to reach the GitHub release API. Check internet access, DNS, " +
+        "proxy settings, TLS inspection or certificates, GitHub rate limits, " +
+        "and whether api.github.com is allowed."
+    )
+}
 $requiredProperties = @("tag_name", "zipball_url", "draft", "prerelease")
 foreach ($property in $requiredProperties) {
     if ($release.PSObject.Properties.Name -notcontains $property) {
@@ -105,7 +303,6 @@ if ($downloadUri.Scheme -ne "https" -or
     throw "GitHub latest-release download URL is outside the expected repository."
 }
 
-$temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $workspace = Join-Path $temporaryRoot (
     "cc-" + [Guid]::NewGuid().ToString("N")
 )
@@ -128,11 +325,20 @@ try {
         -Color Cyan
     $archivePath = Join-Path $workspace "release.zip"
     $extractPath = Join-Path $workspace "s"
-    Invoke-WebRequest `
-        -Uri $downloadUri.AbsoluteUri `
-        -Headers $headers `
-        -UseBasicParsing `
-        -OutFile $archivePath
+    try {
+        Invoke-WebRequest `
+            -Uri $downloadUri.AbsoluteUri `
+            -Headers $headers `
+            -UseBasicParsing `
+            -OutFile $archivePath `
+            -TimeoutSec 120
+    } catch {
+        throw (
+            "Unable to download the GitHub release archive. Check internet " +
+            "access, proxy settings, TLS inspection or certificates, and " +
+            "whether api.github.com and codeload.github.com are allowed."
+        )
+    }
     Write-BootstrapStatus `
         -Label '3/4' `
         -Message 'Verifying the release package...' `
@@ -177,7 +383,7 @@ try {
         Action = "install"
         ProjectRoot = $resolvedProjectRoot
         AgentHost = $AgentHost
-        Python = $Python
+        Python = $pythonPath
     }
     if (-not [string]::IsNullOrWhiteSpace($InstallDirectory)) {
         $installerArguments.InstallDirectory = $InstallDirectory
@@ -230,7 +436,14 @@ try {
     $installedLocation = [string]$installerReport.install_root
 } finally {
     if (Test-Path -LiteralPath $workspace) {
-        Remove-Item -LiteralPath $workspace -Recurse -Force
+        try {
+            Remove-Item -LiteralPath $workspace -Recurse -Force
+        } catch {
+            Write-Warning (
+                "Temporary files could not be removed: $workspace. " +
+                "The installer did not retry with a broader delete."
+            )
+        }
     }
 }
 

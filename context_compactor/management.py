@@ -1299,19 +1299,25 @@ def _validate_python(value: str, which: _Which) -> Path:
         (
             str(resolved),
             "-c",
-            "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+            (
+                "import json, sys; "
+                "print(json.dumps({'executable': sys.executable, "
+                "'version': [sys.version_info[0], sys.version_info[1]]}))"
+            ),
         ),
         "inspect Python version",
     )
     try:
-        major, minor = (
-            int(part) for part in result.stdout.strip().split(".", maxsplit=1)
-        )
-    except (TypeError, ValueError) as error:
+        payload = json.loads(result.stdout.strip())
+        executable = payload["executable"]
+        major, minor = (int(part) for part in payload["version"])
+        if not isinstance(executable, str) or not executable.strip():
+            raise ValueError
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise ManagementError("Python returned an invalid version") from error
     if (major, minor) < (3, 9):
         raise ManagementError("Python 3.9 or newer is required")
-    return resolved
+    return _resolve_executable(executable, which)
 
 
 def _probe_installed_python(interpreter: Path, expected_version: str) -> bool:
@@ -2001,13 +2007,35 @@ def _resolve_executable(value: str, which: _Which) -> Path:
     expanded = os.path.expandvars(os.path.expanduser(value.strip()))
     candidate = Path(expanded)
     if candidate.is_absolute() or candidate.parent != Path("."):
-        if not candidate.is_file():
+        try:
+            available = candidate.is_file()
+        except OSError as error:
+            raise ManagementError(
+                "required executable is unavailable"
+            ) from error
+        if not available:
             raise ManagementError("required executable is unavailable")
-        return candidate.resolve(strict=True)
+        return _resolve_discovered_executable(candidate)
     resolved = which(expanded)
-    if not resolved or not Path(resolved).is_file():
+    if not resolved:
         raise ManagementError("required executable is unavailable")
-    return Path(resolved).resolve(strict=True)
+    candidate = Path(resolved)
+    try:
+        available = candidate.is_file()
+    except OSError as error:
+        raise ManagementError(
+            "required executable is unavailable"
+        ) from error
+    if not available:
+        raise ManagementError("required executable is unavailable")
+    return _resolve_discovered_executable(candidate)
+
+
+def _resolve_discovered_executable(candidate: Path) -> Path:
+    try:
+        return candidate.resolve(strict=True)
+    except OSError:
+        return Path(os.path.abspath(candidate))
 
 
 def _required_executable(
@@ -2016,8 +2044,15 @@ def _required_executable(
 ) -> Path:
     for name in names:
         resolved = which(name)
-        if resolved and Path(resolved).is_file():
-            return Path(resolved).resolve(strict=True)
+        if not resolved:
+            continue
+        candidate = Path(resolved)
+        try:
+            available = candidate.is_file()
+        except OSError:
+            continue
+        if available:
+            return _resolve_discovered_executable(candidate)
     raise ManagementError(f"required {names[0]} executable is unavailable")
 
 
